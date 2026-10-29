@@ -3,6 +3,10 @@
 > **Цель:** Дать любой LLM или аналитику, который впервые видит STALCRAFT, всё необходимое
 > для поиска недооценённых лотов на аукционе и заработка на перепродаже.
 > Промт самодостаточен — не требует предварительных знаний об игре.
+>
+> **Снимок данных:** числа и примеры цен в этом файле — исторический срез сентября 2026.
+> Актуальные количества и цены смотрите в `data/stalzone.db`; математика и пороги —
+> в `app/builder.py` и `app/_numba_search.py`.
 
 ---
 
@@ -470,27 +474,31 @@ art_pct = calc_art_percent(qlt=1, stats_random=0.0)  # = 107.5
 При 429 — sleep 30s. Клиент обрабатывает автоматически.
 
 ### 5.7 Обновление данных в БД
+Штатный путь — коллектор: он сам обновляет активные лоты и историю, атомарно
+публикует результат и не создаёт дублей истории при повторных запусках.
 ```python
-from app.api_client import StalzoneAPI, parse_lot_additional
-from app.database import clear_lots_for_item, insert_lot_record, insert_history_record
+from app.collector import collect_auction_data
+
+# Лоты + история для всех артефактов (история по умолчанию включена)
+collect_auction_data(max_lots=200, item_source="artefacts")
+
+# Только лоты, без истории
+collect_auction_data(max_lots=200, item_source="artefacts", include_history=False)
+
+# Один предмет
+collect_auction_data(item_ids=["qodk"], max_lots=200, max_history=200)
+```
+CLI: `py -3.12 -m app.collector --auction` (флаг `--no-history` отключает историю).
+
+Если история уже получена вручную, используйте дедуплицирующий merge, а не
+поштучный `insert_history_record`:
+```python
+from app.api_client import StalzoneAPI
+from app.database import merge_history_for_item
 
 api = StalzoneAPI()
-
-# Обновить активные лоты для одного артефакта
-item_id = "qodk"
-lots_data = api.fetch_all_lots(item_id, max_records=200)
-clear_lots_for_item(item_id, "EU")
-for lot in lots_data:
-    additional = json.loads(lot.get("additional", "{}"))
-    parsed = parse_lot_additional(additional)
-    insert_lot_record(item_id, lot, parsed, "EU")
-
-# Обновить историю продаж
-history_data = api.fetch_all_history(item_id, max_records=200)
-for entry in history_data:
-    additional = json.loads(entry.get("additional", "{}"))
-    parsed = parse_lot_additional(additional)
-    insert_history_record(item_id, entry, parsed, "EU")
+history = api.fetch_all_history("qodk", max_records=200)
+new_rows = merge_history_for_item("qodk", history, "EU", keep=500)
 ```
 
 ---
