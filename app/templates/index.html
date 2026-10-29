@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stalzone — Сборщик артефактов</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;padding:20px}
+.container{max-width:1200px;margin:0 auto}
+header{text-align:center;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #16213e}
+header h1{color:#e94560;text-transform:uppercase;letter-spacing:2px}
+header p{color:#888;margin-top:6px;font-size:.9em}
+.panel{background:#16213e;border-radius:10px;padding:20px;margin-bottom:16px;border:1px solid #1a1a4e}
+.panel h2{color:#e94560;margin-bottom:14px;font-size:1.1em;text-transform:uppercase}
+.form-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.form-group{flex:1;min-width:130px}
+.form-group label{display:block;font-size:.82em;color:#aaa;margin-bottom:3px}
+.form-group input,.form-group select{width:100%;padding:8px 10px;background:#0f3460;border:1px solid #1a1a4e;border-radius:6px;color:#e0e0e0}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:#e94560}
+.stats-bar{display:flex;gap:12px;justify-content:center;margin-bottom:20px;flex-wrap:wrap}
+.stat-card{background:#16213e;padding:10px 20px;border-radius:8px;text-align:center;border:1px solid #1a1a4e}
+.stat-card .num{font-size:1.6em;font-weight:bold;color:#e94560}
+.stat-card .label{font-size:.75em;color:#888;text-transform:uppercase}
+.btn{background:#e94560;color:#fff;border:none;padding:10px 28px;border-radius:8px;font-size:.95em;cursor:pointer;text-transform:uppercase;font-weight:bold}
+.btn:hover{background:#c73e54}
+.btn:disabled{background:#555;cursor:not-allowed}
+.priority-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.priority-row label{flex:1;font-size:.85em;color:#ccc}
+.priority-row input[type=range]{flex:1;accent-color:#e94560}
+.priority-row .val{width:30px;text-align:center;color:#e94560;font-weight:bold;font-size:.85em}
+.build-card{background:#0f3460;border-radius:10px;padding:16px;margin-bottom:14px;border:1px solid #1a1a4e}
+.build-header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.build-rank{background:#e94560;color:#fff;padding:3px 10px;border-radius:20px;font-weight:bold}
+.build-score{color:#53c353;font-size:1em}
+.build-price{color:#f0a050;font-size:1em}
+.artifacts-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:10px}
+.artifact-card{background:#16213e;border-radius:8px;padding:10px;text-align:center;border:1px solid #1a1a4e}
+.artifact-card img{width:40px;height:40px;margin-bottom:4px}
+.artifact-card .name{font-weight:bold;margin-bottom:2px;font-size:.9em}
+.quality-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:.7em;font-weight:bold;margin-bottom:2px}
+.q-Common{background:#6c6c6c}.q-Uncommon{background:#4e9b2e}.q-Special{background:#2e7b9e}.q-Rare{background:#7b2e9e}.q-Exceptional{background:#d4570f}.q-Legendary{background:#b8860b}
+.artifact-card .price{color:#f0a050;font-size:.85em}
+.artifact-card .ptn{color:#53c353;font-size:.75em}
+.artifact-card .stats{font-size:.7em;color:#888;margin-top:4px}
+.owned-badge{background:#53c353;color:#000;padding:2px 6px;border-radius:4px;font-size:.7em;font-weight:bold}
+.combined-stats{background:#1a1a2e;border-radius:6px;padding:8px;font-size:.85em}
+.stat-line{display:flex;justify-content:space-between;padding:1px 0}
+.stat-val.positive{color:#53c353}.stat-val.negative{color:#e94560}
+.tips-panel{background:#1a1a2e;border:1px solid #2a2a4e;border-radius:6px;padding:8px;margin-top:8px}
+.tip-row{font-size:.78em;color:#aaa;padding:2px 0;line-height:1.4}
+.loading{text-align:center;padding:30px;color:#888;font-size:1.1em}
+.empty{text-align:center;color:#888;padding:20px}
+.owned-item{background:#0f3460;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;align-items:center;gap:8px;border:1px solid #1a1a4e}
+.owned-item select,.owned-item input{background:#1a1a2e;border:1px solid #1a1a4e;border-radius:4px;color:#e0e0e0;padding:4px 6px;font-size:.8em}
+.owned-item .remove{color:#e94560;cursor:pointer;font-weight:bold}
+.section-title{color:#888;font-size:.8em;text-transform:uppercase;margin-bottom:8px;margin-top:12px}
+.switch{position:relative;display:inline-block;width:40px;height:20px;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#555;border-radius:20px;transition:.3s}
+.slider:before{content:"";position:absolute;height:16px;width:16px;left:2px;bottom:2px;background:#e0e0e0;border-radius:50%;transition:.3s}
+input:checked+.slider{background:#e94560}
+input:checked+.slider:before{transform:translateX(20px)}
+.meta-style-btn{background:#0f3460;border:1px solid #1a1a4e;color:#e0e0e0;padding:8px 16px;border-radius:8px;font-size:.85em;cursor:pointer;flex:1;min-width:80px}
+.meta-style-btn:hover{border-color:#e94560}
+.meta-style-btn.active{background:#e94560;color:#fff;border-color:#e94560}
+.meta-progression{display:flex;gap:10px;overflow-x:auto;padding:8px 0}
+.meta-step{background:#0f3460;border-radius:8px;padding:12px;min-width:200px;border:1px solid #1a1a4e;flex-shrink:0}
+.meta-budget-display{font-size:1.2em;font-weight:bold;color:#f0a050}
+</style>
+<body>
+<div class="container">
+<header>
+<h1>Stalzone Сборщик</h1>
+<p>Подбор артефактов по бюджету — аукцион EU</p>
+</header>
+
+<div class="stats-bar" id="statsBar">
+<div class="stat-card"><div class="num" id="statArtefacts">—</div><div class="label">Артефактов</div></div>
+<div class="stat-card"><div class="num" id="statLots">—</div><div class="label">Лотов</div></div>
+<div class="stat-card"><div class="num" id="statContainers">—</div><div class="label">Контейнеров</div></div>
+</div>
+
+<div class="panel" id="metaPanel" style="border-color:#e94560">
+<h2 style="display:flex;justify-content:space-between;align-items:center">🏆 Лучшие сборки <span style="font-size:.65em;color:#888;font-weight:normal">авто-контейнер · Pareto · любой бюджет</span></h2>
+<div class="form-row">
+<div class="form-group" style="flex:2">
+<label>Бюджет артефактов</label>
+<input type="range" id="metaBudget" min="10000" max="500000000" value="50000000" step="10000" style="width:100%;accent-color:#e94560">
+<div style="display:flex;justify-content:space-between;font-size:.8em;color:#888"><span>10K</span><span class="meta-budget-display" id="metaBudgetVal">50M</span><span>500M</span></div>
+</div>
+</div>
+<div class="form-row" style="gap:6px">
+<button class="meta-style-btn active" data-style="balanced">⚖️ Баланс</button>
+<button class="meta-style-btn" data-style="pvp">⚔️ PvP</button>
+<button class="meta-style-btn" data-style="tank">🛡️ Танк</button>
+<button class="meta-style-btn" data-style="speed">💨 Скорость</button>
+<button class="meta-style-btn" data-style="heal">➕ Лечение</button>
+<button class="meta-style-btn" data-style="carry">📦 Перенос</button>
+</div>
+<div class="form-row" style="gap:6px;margin-top:8px">
+<button class="btn" id="metaBuildBtn" style="flex:1">🏆 Найти лучшие</button>
+<button class="btn" id="metaSweepBtn" style="flex:1;background:#0f3460;border:1px solid #e94560">📈 Прогрессия</button>
+</div>
+</div>
+<div class="panel">
+<h2>Параметры</h2>
+<div class="form-row">
+<div class="form-group"><label>Бюджет артефактов (₽)</label><input type="number" id="budget" value="11000000" min="1000" step="100000"></div>
+<div class="form-group"><label>Погрешность (%)</label><input type="number" id="tolerance" value="8" min="0" max="50"></div>
+<div class="form-group"><label>Контейнер</label><select id="containerId"><option value="">Авто</option></select></div>
+<div class="form-group"><label>Топ сборок</label><select id="topN"><option value="5" selected>5</option><option value="10">10</option><option value="20">20</option></select></div>
+<div class="form-group" style="min-width:230px"><label>Цель поиска</label><select id="objectiveMode" onchange="document.getElementById('minBudgetHint').hidden=this.value!=='min_budget';updateQualityConservativeHint()"><option value="balanced" selected>Взвешенный баланс</option><option value="lexicographic">Последовательные приоритеты</option><option value="min_budget">Минимальная цена</option><option value="max_quality">Максимальное качество (MILP)</option></select></div>
+<div class="form-group"><label>Режим</label><select id="buildMode"><option value="custom" selected>Свой</option><option value="pvp">PvP</option><option value="pve">Север / PvE</option><option value="tank">Жир</option><option value="speed">Скорость</option><option value="carry">Перенос</option><option value="farm">Фарм</option><option value="radar">Радар</option><option value="template">📋 Шаблон LZ</option></select></div>
+<div class="form-group"><label>Носибельность</label><select id="carryableOnly"><option value="1" selected>Только носибельные</option><option value="0">Все сборки</option></select></div>
+<div class="form-group"><label>Дубликаты</label><select id="allowDuplicates"><option value="0" selected>Запретить</option><option value="1">Разрешить</option></select></div>
+<div class="form-group"><label><input type="checkbox" id="stockOnlyToggle"> Только стоковые артефакты</label><small>Использовать для сборки только артефакты без заточки (+0)</small></div>
+<div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0">Макс. стат</label><label class="switch"><input type="checkbox" id="maxStatToggle"><span class="slider"></span></label></div>
+<div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0;font-size:.8em" title="Считать статы по минимальному % качества; это не гарантия для всех процентов">Гарант. мин.</label><label class="switch"><input type="checkbox" id="conservativeToggle" onchange="updateQualityConservativeHint()"><span class="slider"></span></label></div>
+<div class="form-group" id="qualityDeepField" hidden><label><input type="checkbox" id="qualityDeep" onchange="updateQualityConservativeHint()" disabled> Глубокая оптимизация — 300 секунд</label><small>Общий бюджет поиска; OPTIMAL не гарантируется.</small></div>
+<div class="form-group" id="primaryOnlyField" hidden><label><input type="checkbox" id="primaryOnly" onchange="if(this.checked)document.getElementById('tolerance').value='0'" disabled> Максимум EHP без минимизации цены</label><small>Только Deep и единственный приоритет EHP. Допуск бюджета 0%; цена ограничена бюджетом; минимальная цена не оптимизируется.</small></div>
+<button class="btn" id="buildBtn">Подобрать</button>
+<button class="btn" id="refreshBtn" style="background:#0f3460;border:1px solid #e94560;font-size:.85em;padding:10px 16px;margin-left:4px" title="Обновить цены аукциона">⟳ Аукцион</button>
+</div>
+
+<div id="minBudgetHint" hidden role="status" style="color:#f0a050;padding:6px 10px">В режиме минимальной цены веса не задают минимальных значений характеристик. Требования укажите в полях «Мин.».</div>
+<div id="qualityConservativeHint" hidden role="status" style="color:#f0a050;padding:6px 10px">Расчёт при минимальном проценте качества. Не является гарантией характеристик и носимости при всех возможных процентах.</div>
+<div id="templateRow" style="display:none;padding:8px 10px;background:#1a1a2e;border-radius:6px;margin-bottom:8px">
+<div style="display:flex;gap:8px;align-items:center">
+<label style="white-space:nowrap;font-size:.85em;color:#f0a050">📋 Lunar-zone URL:</label>
+<input type="text" id="templateUrl" placeholder="https://lunar-zone.com/calculator?build_id=997cb6aa-..." style="flex:1;background:#16213e;border:1px solid #2a2a4e;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:.85em">
+</div>
+<div style="font-size:.8em;color:#888">Шаблон подбирает экземпляры заданных артефактов; выбор цели поиска относится к обычному подбору.</div>
+</div>
+
+<div class="panel" style="padding:10px">
+<div style="display:flex;gap:8px;align-items:center">
+<input type="text" id="aiPrompt" placeholder="Опиши сборку: живучесть, пулестой, вес, бюджет 2млн, дубликаты можно, бочонок..." style="flex:1;background:#1a1a2e;border:1px solid #2a2a4e;color:#e0e0e0;border-radius:6px;padding:8px 12px;font-size:.9em">
+<button class="btn" id="aiParseBtn" style="background:#0f3460;border:1px solid #e94560;font-size:.85em;white-space:nowrap;min-width:90px">🤖 ИИ</button>
+</div>
+</div>
+
+<div class="panel">
+<h2>Приоритеты (0-10)</h2>
+<div id="priorities"></div>
+<div style="font-size:.8em;color:#888">В режиме баланса учитываются все положительные веса. Минимальная цена ищется при выполнении заданных ограничений.</div>
+<div id="lexicographicPanel" hidden style="margin-top:10px">
+<div style="font-size:.85em;margin-bottom:6px">Порядок характеристик с ненулевыми весами: первая важнее всех последующих. Кнопки меняют порядок.</div>
+<div id="lexicographicOrder"></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Хранилище (свои артефакты)</h2>
+<div id="ownedList"></div>
+<button class="btn" id="addOwnedBtn" style="background:#0f3460;border:1px solid #e94560;font-size:.85em;padding:6px 16px">+ Добавить</button>
+</div>
+
+<div class="panel">
+<h2>Броня (опционально)</h2>
+<div class="form-row">
+<div class="form-group" style="flex:2"><label>Экзоброня</label><select id="armorId"><option value="">Без брони</option></select></div>
+<div id="armorPreview" style="flex:3;font-size:.8em;color:#888;padding-top:22px"></div>
+</div>
+<div style="font-size:.8em;color:#888">Цена брони и контейнера не входит в бюджет артефактов.</div>
+</div>
+</div>
+
+<div id="results"><div class="empty">Нажмите «Подобрать»</div></div>
+</div>
+<script>
+function updateQualityConservativeHint() {
+    const isQuality = document.getElementById('objectiveMode').value === 'max_quality';
+    document.getElementById('qualityDeepField').hidden = !isQuality;
+    document.getElementById('qualityDeep').disabled = !isQuality;
+    if (!isQuality) document.getElementById('qualityDeep').checked = false;
+    const primaryAllowed = isQuality && document.getElementById('qualityDeep').checked;
+    document.getElementById('primaryOnlyField').hidden = !isQuality;
+    document.getElementById('primaryOnly').disabled = !primaryAllowed;
+    if (!primaryAllowed) document.getElementById('primaryOnly').checked = false;
+    document.getElementById('qualityConservativeHint').hidden = !(
+        document.getElementById('objectiveMode').value === 'max_quality' &&
+        document.getElementById('conservativeToggle').checked);
+}
+let allStats = {};
+let containers = [];
+let allArtefacts = [];
+let ownedCount = 0;
+let lexOrder = [];
+
+function refreshLexOrder(keys) {
+    const active = Array.isArray(keys) ? keys : Array.from(document.querySelectorAll('[id^="prio_"]'))
+        .filter(el => Number(el.value) > 0).map(el => el.id.slice(5));
+    lexOrder = lexOrder.filter(key => active.includes(key));
+    active.forEach(key => { if (!lexOrder.includes(key)) lexOrder.push(key); });
+    const box = document.getElementById('lexicographicOrder');
+    box.replaceChildren();
+    lexOrder.forEach((key, index) => {
+        const row = document.createElement('div');
+        const label = document.createElement('span');
+        label.textContent = `${index + 1}. ${allStats[key] || key} `;
+        row.appendChild(label);
+        [-1, 1].forEach(delta => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = delta < 0 ? '↑' : '↓';
+            button.title = delta < 0 ? 'Выше в приоритете' : 'Ниже в приоритете';
+            button.disabled = index + delta < 0 || index + delta >= lexOrder.length;
+            button.addEventListener('click', () => {
+                [lexOrder[index], lexOrder[index + delta]] = [lexOrder[index + delta], lexOrder[index]];
+                refreshLexOrder(active);
+            });
+            row.appendChild(button);
+        });
+        box.appendChild(row);
+    });
+}
+
+document.getElementById('objectiveMode').addEventListener('change', () => {
+    document.getElementById('lexicographicPanel').hidden = document.getElementById('objectiveMode').value !== 'lexicographic';
+    refreshLexOrder();
+});
+document.getElementById('priorities').addEventListener('input', () => refreshLexOrder());
+
+// --- FIX: XSS protection — escape all dynamic text before inserting into innerHTML ---
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+async function loadStats() {
+    try {
+        const r = await fetch('/api/stats'); const d = await r.json();
+        document.getElementById('statArtefacts').textContent = d.artefacts || 0;
+        document.getElementById('statLots').textContent = (d.active_lots || 0).toLocaleString('ru');
+        document.getElementById('statContainers').textContent = d.containers || 0;
+    } catch(e) { console.error('loadStats:', e); }
+}
+
+async function loadContainers() {
+    try {
+        const r = await fetch('/api/containers'); containers = await r.json();
+        const sel = document.getElementById('containerId');
+        containers.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = `${c.name_ru} (${c.slots} сл.)`;
+            sel.appendChild(opt);
+        });
+    } catch(e) { console.error('loadContainers:', e); }
+}
+
+async function loadArtefacts() {
+    try {
+        const r = await fetch('/api/artefacts'); allArtefacts = await r.json();
+    } catch(e) { console.error('loadArtefacts:', e); }
+}
+
+async function loadAllStats() {
+    try {
+        const r = await fetch('/api/all-stats'); const d = await r.json();
+        allStats = d.stats;
+        const container = document.getElementById('priorities');
+        const sorted = Object.entries(allStats).sort((a,b) => a[1].localeCompare(b[1], 'ru'));
+        for (const [pid, name] of sorted) {
+            const row = document.createElement('div');
+            row.className = 'priority-row';
+            const isAccum = ['radiation_accumulation', 'biological_accumulation', 'psycho_accumulation',
+                             'thermal_accumulation', 'frost_accumulation'].includes(pid);
+            const label = isAccum ? `${name} (защита)` : name;
+            row.innerHTML = `<label>${label}</label><input type="range" id="prio_${pid}" min="0" max="10" value="0" oninput="document.getElementById('prioval_${pid}').textContent=this.value"><span class="val" id="prioval_${pid}">0</span><input type="number" id="min_${pid}" placeholder="мин" style="width:45px;font-size:.8em;padding:4px" title="Мин. значение"><input type="number" id="max_${pid}" placeholder="макс" style="width:45px;font-size:.8em;padding:4px" title="Макс. значение">`;
+            if (["effective_health", "healing_percent_per_second", "healing_ehp_per_second"].includes(pid)) {
+                row.title = "Только Max Quality / Deep, Balanced. Веса сравнивают показатели по фиксированной для поиска шкале; обязательное значение задайте в поле мин. Модель Wiki без боевых эффектов. Восстановление — EHP × процент / 100, в EHP/с. Проценты физических лотов могут быть неизвестны.";
+                row.querySelectorAll("input[type=number]").forEach(input => input.step = "any");
+            }
+            container.appendChild(row);
+        }
+    } catch(e) { console.error('loadAllStats:', e); }
+}
+
+function addOwned() {
+    const list = document.getElementById('ownedList');
+    const div = document.createElement('div');
+    div.className = 'owned-item';
+    div.id = `owned_${ownedCount++}`;
+    div.style.cssText = 'display:flex;align-items:flex-start;gap:4px;flex-wrap:wrap;margin-bottom:6px;padding:6px;background:#0a1628;border-radius:4px';
+
+    // Artifact dropdown — populated from allArtefacts (loaded at startup)
+    const artSel = document.createElement('select');
+    artSel.style.cssText = 'flex:1;min-width:140px;max-width:200px';
+    artSel.innerHTML = '<option value="">— Артефакт —</option>';
+    let lastSubcat = '';
+    allArtefacts.forEach(a => {
+        if (a.subcategory !== lastSubcat) {
+            const og = document.createElement('optgroup');
+            og.label = a.subcategory || 'Прочее';
+            artSel.appendChild(og);
+            lastSubcat = a.subcategory;
+        }
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = a.name_ru;
+        artSel.appendChild(opt);
+    });
+
+    // Quality select
+    const qSel = document.createElement('select');
+    qSel.style.cssText = 'width:90px';
+    qSel.innerHTML = '<option value="0">Обычн.</option><option value="1">Необыч.</option><option value="2">Особ.</option><option value="3" selected>Редк.</option><option value="4">Исключ.</option><option value="5">Легенд.</option>';
+
+    // PTN input
+    const ptnInput = document.createElement('input');
+    ptnInput.type = 'number';
+    ptnInput.min = '0'; ptnInput.max = '15';
+    ptnInput.value = '15';
+    ptnInput.style.cssText = 'width:45px';
+    ptnInput.title = 'Заточка (0-15)';
+
+    // Art percent — auto-filled on quality change, editable
+    const pctInput = document.createElement('input');
+    pctInput.type = 'number';
+    pctInput.step = '0.1';
+    pctInput.style.cssText = 'width:55px';
+    pctInput.title = 'art_percent (авто: макс диапазона качества)';
+    // Auto-fill art_percent on quality change
+    const QR = {0:100,1:115,2:130,3:145,4:160,5:175};
+    qSel.addEventListener('change', () => { pctInput.value = QR[parseInt(qSel.value)] || 100; });
+    pctInput.value = QR[3]; // default for quality=3
+
+    // Bonus container — populated when artifact selected
+    const bonusDiv = document.createElement('div');
+    bonusDiv.className = 'bonus-container';
+    bonusDiv.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;flex:1;min-width:120px';
+
+    // Load bonuses when artifact selected
+    artSel.addEventListener('change', async () => {
+        const aid = artSel.value;
+        bonusDiv.innerHTML = '';
+        if (!aid) return;
+        try {
+            const r = await fetch(`/api/artefacts/${aid}`);
+            if (!r.ok) return;
+            const data = await r.json();
+            const bonuses = data.bonus_stats || [];
+            if (bonuses.length === 0) {
+                bonusDiv.innerHTML = '<span style="font-size:.75em;color:#555">Нет бонусов</span>';
+                return;
+            }
+            bonuses.forEach((b, i) => {
+                const unlockPtn = b.unlock_ptn || [5, 10, 15][i] || 0;
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.value = b.prop_id.toUpperCase();
+                cb.id = `bonus_${div.id}_${b.prop_id}`;
+                cb.dataset.ptn = unlockPtn;
+                cb.title = `Разблокируется при ptn≥${unlockPtn}`;
+                const lbl = document.createElement('label');
+                lbl.textContent = b.name_ru;
+                lbl.htmlFor = cb.id;
+                lbl.style.cssText = 'font-size:.7em;color:#888;cursor:pointer';
+                const wrap = document.createElement('span');
+                wrap.style.cssText = 'display:flex;align-items:center;gap:2px';
+                wrap.appendChild(cb);
+                wrap.appendChild(lbl);
+                bonusDiv.appendChild(wrap);
+            });
+        } catch(e) { console.error('loadBonuses:', e); }
+    });
+
+    // Remove button
+    const rm = document.createElement('span');
+    rm.className = 'remove';
+    rm.textContent = '✕';
+    rm.style.cssText = 'cursor:pointer;color:#e94560;font-size:1.1em;padding:2px 4px';
+    rm.onclick = () => div.remove();
+
+    // Assemble
+    div.appendChild(artSel);
+    div.appendChild(qSel);
+    div.appendChild(ptnInput);
+    div.appendChild(pctInput);
+    div.appendChild(bonusDiv);
+    div.appendChild(rm);
+    list.appendChild(div);
+}
+
+function getOwnedArtifacts() {
+    const list = document.querySelectorAll('.owned-item');
+    const owned = [];
+    list.forEach(item => {
+        const idEl = item.querySelector('select'); // first select = artifact
+        const selEls = item.querySelectorAll('select');
+        const id = idEl ? idEl.value.trim() : '';
+        const q = selEls.length > 1 ? selEls[1].value : '0';
+        const numEls = item.querySelectorAll('input[type=number]');
+        const ptn = numEls[0] ? parseInt(numEls[0].value) || 0 : 0;
+        const pct = numEls[1] ? parseFloat(numEls[1].value) || 0 : 0;
+        // Collect bonus_ids from checkboxes
+        const bonusIds = [];
+        item.querySelectorAll('input[type=checkbox]:checked').forEach(cb => {
+            bonusIds.push(cb.value);
+        });
+        if (id) {
+            owned.push({item_id: id, quality: parseInt(q), ptn: ptn, art_percent: pct, bonus_ids: bonusIds});
+        }
+    });
+    return owned;
+}
+
+function saveOwnedArtifacts() {
+    const owned = getOwnedArtifacts();
+    localStorage.setItem('owned_artifacts', JSON.stringify(owned));
+}
+
+async function loadOwnedArtifacts() {
+    const saved = localStorage.getItem('owned_artifacts');
+    if (!saved) return;
+    try {
+        const owned = JSON.parse(saved);
+        for (const oa of owned) {
+            addOwned();
+            const items = document.querySelectorAll('.owned-item');
+            const last = items[items.length - 1];
+            if (!last) continue;
+            const selects = last.querySelectorAll('select');
+            if (selects[0]) {
+                selects[0].value = oa.item_id;
+                selects[0].dispatchEvent(new Event('change'));
+            }
+            if (selects[1]) selects[1].value = String(oa.quality || 0);
+            const numEls = last.querySelectorAll('input[type=number]');
+            if (numEls[0]) numEls[0].value = oa.ptn || 0;
+            if (numEls[1]) numEls[1].value = oa.art_percent || 0;
+            // Wait for bonuses to load, then check them
+            if (oa.bonus_ids && oa.bonus_ids.length) {
+                setTimeout(() => {
+                    oa.bonus_ids.forEach(bid => {
+                        const cb = last.querySelector(`input[type=checkbox][value="${bid}"]`);
+                        if (cb) cb.checked = true;
+                    });
+                }, 500);
+            }
+        }
+    } catch(e) { console.error('loadOwnedArtifacts:', e); }
+}
+
+const MODES = {
+    pvp:    {bullet_dmg_factor: 10, health_bonus: 8, stamina_bonus: 5, stopping_protection: 5, tear_dmg_factor: 5},
+    pve:    {bullet_dmg_factor: 5, health_bonus: 8, regeneration_bonus: 8, thermal_protection: 5, psycho_protection: 5, biological_protection: 5},
+    tank:   {health_bonus: 10, regeneration_bonus: 10, heal_efficiency: 8, artefakt_heal: 8, bullet_dmg_factor: 7, stamina_bonus: 5},
+    speed:  {speed_modifier: 10, sprint_speed_modifier: 10, stamina_bonus: 8, max_weight_bonus: 8, stamina_regeneration_bonus: 5},
+    carry:  {max_weight_bonus: 10, bullet_dmg_factor: 5, health_bonus: 5, stamina_bonus: 5},
+    farm:   {max_weight_bonus: 10, speed_modifier: 8, sprint_speed_modifier: 8, stamina_bonus: 5, health_bonus: 5},
+    radar:  {tear_dmg_factor: 10, explosion_dmg_factor: 8, stopping_protection: 5, health_bonus: 5},
+    custom: {}
+};
+
+function applyMode(mode) {
+    const priorities = MODES[mode] || {};
+    document.querySelectorAll('[id^="prio_"]').forEach(el => {
+        el.value = 0;
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+    for (const [stat, val] of Object.entries(priorities)) {
+        const el = document.getElementById('prio_' + stat);
+        if (el) {
+            el.value = val;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    }
+}
+
+let armorsData = [];
+async function loadArmors() {
+    try {
+        const r = await fetch('/api/armors');
+        armorsData = await r.json();
+        const sel = document.getElementById('armorId');
+        armorsData.forEach(a => {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            const bullet = a.stats.bullet_dmg_factor || 0;
+            opt.textContent = `${a.name_ru} (+${bullet.toFixed(0)} пулестой)`;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', updateArmorPreview);
+    } catch(e) { console.error('loadArmors failed:', e); }
+}
+function updateArmorPreview() {
+    const aid = document.getElementById('armorId').value;
+    const preview = document.getElementById('armorPreview');
+    if (!aid) { preview.innerHTML = ''; return; }
+    const a = armorsData.find(x => x.id === aid);
+    if (!a) { preview.innerHTML = ''; return; }
+    const s = a.stats;
+    let parts = [];
+    if (s.bullet_dmg_factor) parts.push(`пулестой +${s.bullet_dmg_factor.toFixed(0)}`);
+    if (s.tear_dmg_factor) parts.push(`разрыв +${s.tear_dmg_factor.toFixed(0)}`);
+    if (s.explosion_dmg_factor) parts.push(`взрыв +${s.explosion_dmg_factor.toFixed(0)}`);
+    if (s.speed_modifier) parts.push(`скорость +${s.speed_modifier.toFixed(0)}%`);
+    if (s.max_weight_bonus) parts.push(`вес +${s.max_weight_bonus.toFixed(0)}`);
+    if (s.bleeding_accumulation) parts.push(`кровотечение ${s.bleeding_accumulation > 0 ? '+' : ''}${s.bleeding_accumulation.toFixed(1)}`);
+    preview.innerHTML = parts.join(' · ') || '';
+}
+
+async function findBuilds() {
+    const stockOnly = document.getElementById('stockOnlyToggle').checked;
+    const maxStat = document.getElementById('maxStatToggle').checked;
+    const btn = document.getElementById('buildBtn');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const results = document.getElementById('results');
+    const cid2 = document.getElementById('containerId');
+    const cidName = cid2.options[cid2.selectedIndex]?.textContent || 'Авто';
+    const slotMatch = cidName.match(/\((\d+)\s*сл\./);
+    const slots = slotMatch ? parseInt(slotMatch[1]) : '?';
+    let stage = 0;
+    const stages = [
+        'Загрузка данных из аукциона',
+        `Поиск: ${cidName} (${slots} слотов)`,
+        `Обработка результатов`
+    ];
+    let estTime = slots >= 7 ? 85 : slots >= 5 ? 15 : 5;
+    results.innerHTML = `<div class="loading" id="loadingBox">
+        <div style="font-size:1.1em;margin-bottom:8px">⟳ <span id="loadStage">${stages[0]}</span></div>
+        <div style="background:#1a1a2e;border-radius:4px;height:8px;width:300px;overflow:hidden">
+            <div id="loadBar" style="background:#e94560;height:100%;width:0%;transition:width 1s"></div>
+        </div>
+        <div style="font-size:.75em;color:#555;margin-top:4px">
+            <span id="loadTime">0</span><span id="loadTimeLabel">с из ~${estTime}с</span>
+        </div>
+    </div>`;
+    const t0 = Date.now();
+    const dotTimer = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - t0) / 1000);
+        const bar = document.getElementById('loadBar');
+        const time = document.getElementById('loadTime');
+        const stageEl = document.getElementById('loadStage');
+        if (bar) {
+            if (elapsed >= estTime) {
+                bar.style.width = '95%';
+                bar.style.background = '#f0a050';
+            } else {
+                bar.style.width = Math.min(95, (elapsed / estTime) * 100) + '%';
+            }
+        }
+        if (time) {
+            time.textContent = elapsed;
+            const timeEl = document.getElementById('loadTimeLabel');
+            if (timeEl) {
+                if (elapsed >= estTime) timeEl.textContent = 'с (завершается, чуть дольше...)';
+                else timeEl.textContent = `с из ~${estTime}с`;
+            }
+        }
+        if (stageEl) {
+            if (elapsed > 2 && stage < 1) { stage = 1; stageEl.textContent = stages[1]; }
+            if (elapsed > estTime * 0.8 && stage < 2) { stage = 2; stageEl.textContent = stages[2]; }
+        }
+    }, 1000);
+    const stopTimer = () => { clearInterval(dotTimer); btn.disabled = false; };
+
+    // ── Template mode: derive priorities from lunar-zone build, then normal search ──
+    window._templateStats = null;
+    let _templateBuildData = null;
+    if (document.getElementById('buildMode').value === 'template') {
+        const urlInput = document.getElementById('templateUrl').value.trim();
+        if (!urlInput) {
+            stopTimer();
+            results.innerHTML = '<div class="empty">Введите URL сборки lunar-zone (например https://lunar-zone.com/calculator?build_id=...)</div>';
+            return;
+        }
+        const m = urlInput.match(/build_id=([a-f0-9-]+)/i);
+        const templateBuildId = m ? m[1] : urlInput;
+        try {
+            const tr = await fetch(`/api/verify-lunarzone?build_id=${templateBuildId}`);
+            if (!tr.ok) {
+                stopTimer();
+                results.innerHTML = '<div class="empty">Шаблон не найден на lunar-zone</div>';
+                return;
+            }
+            const td = await tr.json();
+            // Derive priorities: EHP drivers (10) + balanced (weight/speed/stamina 8, health 10) + top 1 (5)
+            // High weight on speed/stamina forces optimizer to pick Змеиный глаз over extra Юла
+            const _accStats = new Set(['psycho_accumulation','radiation_accumulation','thermal_accumulation','biological_accumulation','sprint_speed_modifier','bleeding_accumulation','combustion_accumulation']);
+            const tplStats = (td.computed_stats || {}).combined_stats || {};
+            // EHP drivers — always priority 10
+            const _ehpDrivers = ['bullet_dmg_factor', 'health_bonus', 'stopping_protection'];
+            // User-critical stats — weight (8), speed (8), stamina (8)
+            const _critical = { 'max_weight_bonus': 8, 'speed_modifier': 8, 'stamina_bonus': 8 };
+            // Other stats sorted by value (excl accumulation + EHP drivers + critical)
+            const _others = Object.entries(tplStats)
+                .filter(([k, v]) => v > 0.5 && !_accStats.has(k) && !_ehpDrivers.includes(k) && !(k in _critical))
+                .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+            window._templatePriorities = {};
+            _ehpDrivers.forEach(k => { if (tplStats[k] > 0.5) window._templatePriorities[k] = 10; });
+            Object.entries(_critical).forEach(([k, p]) => { if (tplStats[k] > 0.5) window._templatePriorities[k] = p; });
+            // Top 1 other: priority 5
+            _others.slice(0, 1).forEach(([k]) => { window._templatePriorities[k] = 5; });
+            // DON'T exclude non-template artifacts — let optimizer find analogs with similar stats
+            window._templateExcludeIds = [];
+            // Store template stats for comparison display
+            window._templateStats = td.computed_stats;
+            window._templateName = td.name || '';
+            window._templateUrl = td.lunar_url || '';
+        } catch (e) {
+            stopTimer();
+            results.innerHTML = `<div class="empty">Ошибка загрузки шаблона: ${e.message}</div>`;
+            return;
+        }
+        if (!stockOnly) try {
+            const _tbParams = new URLSearchParams({
+                build_id: templateBuildId,
+                budget: document.getElementById('budget').value || '11000000',
+                relax_quality: 'true',
+            });
+            const _contSel = document.getElementById('containerId');
+            if (_contSel && _contSel.value) _tbParams.append('container_id', _contSel.value);
+            const _tbR = await fetch('/api/template-build?' + _tbParams.toString());
+            if (_tbR.ok) {
+                const _tbD = await _tbR.json();
+                if (_tbD.filled_slots > 0 && _tbD.selected_lots) {
+                    // If carryable_only is set, check if the build is actually carryable
+                    const _carryOnly = document.getElementById('carryableOnly').value === '1';
+                    const _isCarryable = (_tbD.template_stats || _tbD.computed_stats || {}).carryable !== false;
+                    if (_carryOnly && !_isCarryable) {
+                        // Template composition is not carryable with this container — skip, fall through
+                        _templateBuildData = null;
+                        window._templateNotCarryable = (_tbD.template_stats || _tbD.computed_stats || {}).carryability_warnings || [];
+                    } else {
+                        _templateBuildData = _tbD;
+                    }
+                }
+            }
+        } catch(_tbE) { /* fall through to regular search */ }
+    }
+
+
+    const params = new URLSearchParams();
+    const budgetVal = document.getElementById('budget').value;
+    if (maxStat && document.getElementById('objectiveMode').value !== 'max_quality') {
+        // "Макс. стат": no budget limit — maximize stats regardless of cost
+        params.append('budget', '999999999');
+    } else if (budgetVal && parseInt(budgetVal) > 0) {
+        params.append('budget', budgetVal);
+    }
+    params.append('tolerance', document.getElementById('tolerance').value);
+    params.append('top_n', document.getElementById('topN').value);
+    const cid = document.getElementById('containerId').value;
+    if (cid) params.append('container_id', cid);
+    const aid = document.getElementById('armorId').value;
+    if (aid) params.append('armor_id', aid);
+    params.append('carryable_only', document.getElementById('carryableOnly').value);
+    params.append('allow_duplicates', document.getElementById('allowDuplicates').value);
+    if (stockOnly) params.append('stock_only', 'true');
+    const prio = {};
+    const mins = {};
+    const maxs = {};
+    document.querySelectorAll('[id^="prio_"]').forEach(el => {
+        const pid = el.id.replace('prio_', '');
+        const val = parseInt(el.value);
+        if (val > 0) prio[pid] = val;
+        const minEl = document.getElementById('min_' + pid);
+        if (minEl && minEl.value !== '') {
+            const mv = parseFloat(minEl.value);
+            if (!isNaN(mv)) mins[pid] = mv;
+        }
+        const maxEl = document.getElementById('max_' + pid);
+        if (maxEl && maxEl.value !== '') {
+            const mv = parseFloat(maxEl.value);
+            if (!isNaN(mv)) maxs[pid] = mv;
+        }
+    });
+    // Template mode: merge lunar-zone derived priorities (UI sliders take precedence)
+    if (window._templatePriorities) {
+        for (const [k, v] of Object.entries(window._templatePriorities)) {
+            if (!(k in prio)) prio[k] = v;
+        }
+    }
+    // Merge with AI-parsed max thresholds (UI inputs take precedence)
+    const finalMaxs = Object.assign({}, window._maxThresholds || {}, maxs);
+    if (Object.keys(prio).length > 0) params.append('priorities', JSON.stringify(prio));
+    if (Object.keys(mins).length > 0) params.append('min_thresholds', JSON.stringify(mins));
+    if (Object.keys(finalMaxs).length > 0)
+        params.append('max_thresholds', JSON.stringify(finalMaxs));
+    const owned = getOwnedArtifacts();
+    if (owned.length > 0) params.append('owned', JSON.stringify(owned));
+    // "Макс. стат" and "Гарант. мин." are quality-calculation toggles, not budget modes.
+    const objectiveMode = document.getElementById('objectiveMode').value;
+    document.getElementById('minBudgetHint').hidden = objectiveMode !== 'min_budget';
+    params.append('optimization_mode', objectiveMode === 'max_quality' ? 'balanced' : objectiveMode);
+    if (objectiveMode === 'max_quality') {
+        params.append('max_quality', 'true');
+        params.append('quality_timeout', document.getElementById('qualityDeep').checked ? '300' : '45');
+        if (document.getElementById('qualityDeep').checked) params.append('deep_optimization', 'true');
+    }
+    if (document.getElementById('primaryOnly').checked) {
+        if (objectiveMode !== 'max_quality' || !document.getElementById('qualityDeep').checked || Object.keys(prio).length !== 1 || !(prio.effective_health > 0)) {
+            results.innerHTML = '<div class="empty">Для режима без минимизации цены выберите Deep и только приоритет EHP.</div>';
+            stopTimer(); btn.disabled = false; return;
+        }
+        document.getElementById('tolerance').value = '0';
+        params.set('tolerance', '0');
+        params.append('primary_only', 'true');
+    }
+    if (objectiveMode === 'min_budget') {
+        params.append('min_budget_timeout', '30');
+    }
+    if (objectiveMode === 'lexicographic') {
+        refreshLexOrder(Object.keys(prio));
+        if (lexOrder.length === 0) {
+            results.innerHTML = '<div class="empty">Задайте хотя бы один положительный вес для последовательных приоритетов.</div>';
+            stopTimer(); btn.disabled = false;
+            return;
+        }
+        params.append('priority_order', JSON.stringify(lexOrder));
+    }
+    if (document.getElementById('conservativeToggle').checked) params.append('conservative', '1');
+    // Exclude: merge UI excludes + template-mode artifact restriction
+    const _allExclude = [...(window._excludeIds || []), ...(window._templateExcludeIds || [])];
+    const _uniqExclude = [...new Set(_allExclude)];
+    if (_uniqExclude.length > 0)
+        params.append('exclude', JSON.stringify(_uniqExclude));
+    if (window._lastPromptText)
+        params.append('prompt_text', window._lastPromptText);
+    try {
+        if (_templateBuildData && objectiveMode !== 'max_quality' && !stockOnly) {
+            // Use template-build response — wrap into builds format
+            var d = {
+                builds_found: 1,
+                builds: [{
+                    total_price: _templateBuildData.total_price,
+                    total_score: 0,
+                    effective_health: (_templateBuildData.computed_stats || {}).effective_health || 0,
+                    healing_per_second: (_templateBuildData.computed_stats || {}).healing_per_second || 0,
+                    combined_stats: (_templateBuildData.computed_stats || {}).combined_stats || {},
+                    combined_stats_names: (_templateBuildData.computed_stats || {}).combined_stats_names || {},
+                    artifacts: ((_templateBuildData.computed_stats || {}).artifacts || []).map((a, i) => {
+                        const lot = (_templateBuildData.selected_lots || [])[i] || {};
+                        return {...a, is_owned: false,
+                            buyout_price: lot.buyout_price || a.buyout_price || 0,
+                            lot_ptn: lot.ptn,
+                            lot_art_percent: lot.art_percent
+                        };
+                    }),
+                    carryable: (_templateBuildData.computed_stats || {}).carryable !== false,
+                    carryability_warnings: (_templateBuildData.computed_stats || {}).carryability_warnings || [],
+                }],
+                budget: parseInt(document.getElementById('budget').value || '11000000'),
+                effective_budget: _templateBuildData.effective_budget,
+            };
+        } else {
+            // Regular optimizer (with template priorities, no exclude — finds analog artifacts)
+            const ctrl = new AbortController();
+            const timeout = setTimeout(() => ctrl.abort(), 900000);
+            const r = await fetch('/api/builds?' + params.toString(), {signal: ctrl.signal});
+            clearTimeout(timeout);
+            if (!r.ok) {
+                results.innerHTML = `<div class="empty">Ошибка сервера: ${r.status} ${r.statusText}</div>`;
+                return;
+            }
+            var d = await r.json();
+        }
+        if (!d.builds || d.builds.length === 0) {
+            const hint = d.search_status && d.search_status.message
+                ? d.search_status.message
+                : 'Поиск не смог подтвердить наличие или отсутствие допустимой сборки. Это не доказательство недостаточного бюджета.';
+            results.innerHTML = `<div class="empty">${escapeHtml(hint)}</div>`;
+            return;
+        }
+        let headerText = maxStat
+            ? `Найдено ${d.builds_found} сборок (макс. стат за ${d.budget.toLocaleString('ru')} ₽)`
+            : `Найдено ${d.builds_found} сборок, бюджет ${d.budget.toLocaleString('ru')} ₽ (эфф. ${d.effective_budget.toLocaleString('ru')})`;
+        // Preserve server ordering: balanced, lexicographic and price modes
+        // have different ranking keys; the scalar display score is insufficient.
+        let html = '';
+        if (d.search_status) html += `<div role="status" style="color:#f0a050;margin-bottom:8px">${escapeHtml(d.search_status.message)}</div>`;
+        if (window._templateNotCarryable && window._templateNotCarryable.length > 0) {
+            html += `<div style="background:#3a1a1a;border:1px solid #e94560;border-radius:8px;padding:10px;margin-bottom:10px">
+                <div style="color:#e94560;font-size:.9em;margin-bottom:4px">⚠ Шаблон не носибелен с выбранным контейнером</div>
+                ${window._templateNotCarryable.map(w => `<div style="color:#e94560;font-size:.8em">⚠ ${escapeHtml(w)}</div>`).join('')}
+                <div style="color:#999;font-size:.75em;margin-top:4px">Показаны альтернативные сборки из обычного поиска.</div>
+            </div>`;
+            window._templateNotCarryable = null;
+        }
+        // Template comparison banner
+        if (window._templateStats) {
+            const ts = window._templateStats.combined_stats || {};
+            const teh = window._templateStats.effective_health || 0;
+            const top = d.builds[0] || {};
+            const bs = top.combined_stats || {};
+            const beh = top.effective_health || 0;
+            const ehpPct = teh > 0 ? Math.round((beh / teh) * 100) : 0;
+            html += `<div style="background:#1a1a2e;border:1px solid #f0a050;border-radius:8px;padding:10px;margin-bottom:10px">
+                <div style="color:#f0a050;font-size:.9em;margin-bottom:4px">📋 Аналог шаблона: ${escapeHtml(window._templateName || '')}
+                    ${window._templateUrl ? `· <a href="${window._templateUrl}" target="_blank" style="color:#e94560">↗ lunar-zone</a>` : ''}
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px;font-size:.8em">`;
+            const keyStats = ['bullet_dmg_factor','tear_dmg_factor','health_bonus','speed_modifier','stamina_bonus','max_weight_bonus','heal_efficiency','stopping_protection'];
+            for (const k of keyStats) {
+                const tv = ts[k];
+                if (tv === undefined) continue;
+                const bv = bs[k] || 0;
+                const pct = Math.round((bv / tv) * 100);
+                const color = pct >= 95 ? '#53c353' : pct >= 70 ? '#f0a050' : '#e94560';
+                const label = (window._templateStats.combined_stats_names || {})[k] || k;
+                html += `<div style="background:#16213e;border-radius:4px;padding:3px 6px">
+                    <span style="color:#888">${escapeHtml(label)}:</span>
+                    <b style="color:${color}">${bv.toFixed(1)}</b>
+                    <span style="color:#555">/${tv.toFixed(1)} (${pct}%)</span>
+                </div>`;
+            }
+            html += `<div style="background:#16213e;border-radius:4px;padding:3px 6px">
+                <span style="color:#888">EHP:</span>
+                <b style="color:${ehpPct>=95?'#53c353':ehpPct>=70?'#f0a050':'#e94560'}">${beh.toFixed(1)}</b>
+                <span style="color:#555">/${teh.toFixed(1)} (${ehpPct}%)</span>
+            </div>`;
+            html += `</div></div>`;
+        }
+        html += `<div style="margin-bottom:10px;color:#888">${headerText}</div>`;
+        window._lastBuilds = d.builds;
+        window._compareBuilds = [];
+        d.builds.forEach((build, i) => {
+            const carryable = build.carryable !== false;
+            const carryClass = carryable ? 'build-rank' : 'build-rank';
+            const carryIcon = carryable ? '✓' : '⚠';
+            const carryColor = carryable ? '#53c353' : '#e94560';
+
+            // Carryability warnings
+            let warnHtml = '';
+            if (build.carryability_warnings && build.carryability_warnings.length > 0) {
+                warnHtml = `<div style="background:#3a1a1a;border-radius:6px;padding:8px;margin-bottom:8px;border:1px solid #e94560">`;
+                build.carryability_warnings.forEach(w => { warnHtml += `<div style="color:#e94560;font-size:.8em">⚠ ${escapeHtml(w)}</div>`; });
+                warnHtml += `</div>`;
+            }
+            // Hidden effect warnings (изнанка)
+            if (build.hidden_effect_warnings && build.hidden_effect_warnings.length > 0) {
+                warnHtml += `<div style="background:#3a2a1a;border-radius:6px;padding:8px;margin-bottom:8px;border:1px solid #f0a050">`;
+                build.hidden_effect_warnings.forEach(w => {
+                    const sev = w.severity || 'critical';
+                    const color = sev === 'critical' ? '#e94560' : '#f0a050';
+                    warnHtml += `<div style="color:${color};font-size:.8em">⚠ <b>${escapeHtml(w.name_ru)}</b>: ${escapeHtml(w.effect)}</div>`;
+                });
+                warnHtml += `</div>`;
+            }
+
+            let cHtml = '';
+            if (build.container) {
+                c = build.container;
+                let bonus = '';
+                if (c.bonus_stats && Object.keys(c.bonus_stats).length > 0) {
+                    bonus = Object.values(c.bonus_stats).map(v => `${escapeHtml(v.name_ru)}:${escapeHtml(v.value)}`).join('<br>');
+                }
+                cHtml = `<div class="artifact-card" style="border-color:#e94560">
+                    ${c.icon_url ? `<img src="${escapeHtml(c.icon_url)}" onerror="this.style.display='none'">` : ''}
+                    <div class="name">${escapeHtml(c.name_ru)}</div>
+                    <span class="quality-badge" style="background:#e94560">${escapeHtml(c.slots)} сл.</span>
+                    <div class="stats">Защита:${escapeHtml(c.inner_protection)}%<br>Эфф:${escapeHtml(c.effectiveness)}%<br>${bonus}</div>
+                </div>`;
+            }
+
+            let armHtml = '';
+            if (build.armor) {
+                const ar = build.armor;
+                const as = ar.stats || {};
+                let aStats = [];
+                if (as.bullet_dmg_factor) aStats.push(`Пулестой:${as.bullet_dmg_factor.toFixed(0)}`);
+                if (as.tear_dmg_factor) aStats.push(`Разрыв:${as.tear_dmg_factor.toFixed(0)}`);
+                if (as.max_weight_bonus) aStats.push(`Вес:+${as.max_weight_bonus.toFixed(0)}`);
+                if (as.speed_modifier) aStats.push(`Скор:+${as.speed_modifier.toFixed(0)}%`);
+                armHtml = `<div class="artifact-card" style="border-color:#d4570f">
+                    <div class="name">${escapeHtml(ar.name_ru)}</div>
+                    <span class="quality-badge" style="background:#d4570f">${escapeHtml(ar.rank)}</span>
+                    <div class="stats">${aStats.join('<br>')}</div>
+                </div>`;
+            }
+            let aHtml = '';
+            build.artifacts.forEach((a, aIdx) => {
+                const sn = a.stats_names || {};
+                // Split stats into base vs unlocked bonus vs locked
+                const allBonuses = a.bonus_stats || [];
+                const unlockedPids = new Set(
+                    allBonuses.filter(b => b.unlock_ptn <= a.ptn).map(b => b.prop_id)
+                );
+                const lockedBonuses = allBonuses.filter(b => b.unlock_ptn > a.ptn);
+                // Danger stat keys for coloring
+                const dangerKeys = ['psycho_accumulation','radiation_accumulation','thermal_accumulation','biological_accumulation','frost_accumulation'];
+                const invKeys = ['recoil_bonus','wiggle_bonus'];
+                function statColor(k, v) {
+                    if (dangerKeys.includes(k)) return v > 0.5 ? '#e94560' : (v > 0 ? '#f0a050' : '#53c353');
+                    if (invKeys.includes(k)) return v > 0 ? '#e94560' : '#53c353';
+                    return v >= 0 ? '#53c353' : '#e94560';
+                }
+                // Base stats
+                let baseHtml = '';
+                let bonusHtml = '';
+                for (const [k, v] of Object.entries(a.stats)) {
+                    const name = escapeHtml(sn[k] || k);
+                    const val = `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+                    const col = statColor(k, v);
+                    if (unlockedPids.has(k)) {
+                        const bInfo = allBonuses.find(b => b.prop_id === k);
+                        bonusHtml += `<div style="color:${col};font-size:.7em">⭐ ${name}: ${val} <span style="color:#666;font-size:.85em">(доп, ptn ${bInfo?.unlock_ptn||'?'})</span></div>`;
+                    } else {
+                        baseHtml += `<div style="color:${col};font-size:.7em">${name}: ${val}</div>`;
+                    }
+                }
+                // Locked bonus stats (not yet researched)
+                let lockedHtml = '';
+                if (lockedBonuses.length > 0) {
+                    lockedHtml = '<div style="border-top:1px dashed #333;margin-top:3px;padding-top:2px"></div>';
+                    for (const b of lockedBonuses) {
+                        const sign = b.is_positive ? '+' : '';
+                        const range = b.min === b.max ? `${sign}${b.min}` : `${sign}${b.min}…${sign}${b.max}`;
+                        lockedHtml += `<div style="color:#555;font-size:.65em">🔒 ${escapeHtml(b.name_ru||b.prop_id)}: ${range} <span style="font-size:.85em">(ptn ${b.unlock_ptn})</span></div>`;
+                    }
+                }
+                const statsHtml = baseHtml + (bonusHtml ? `<div style="border-top:1px dashed #333;margin-top:3px;padding-top:2px"></div>${bonusHtml}` : '') + lockedHtml;
+                // Recommended percent for unresearched
+                let pctHtml = '';
+                if (a.recommended_percent) {
+                    pctHtml = `<div class="ptn" style="color:#53c353" title="Рекомендуемый процент для ролла">≈${escapeHtml(a.recommended_percent)}% (ролл)</div>`;
+                } else {
+                    pctHtml = `<div class="ptn" style="color:#f0a050">${a.ptn === 0 ? '≈' : ''}${escapeHtml(a.art_percent)}%</div>`;
+                }
+                aHtml += `<div class="artifact-card">
+                    ${a.icon_url ? `<img src="${escapeHtml(a.icon_url)}" onerror="this.style.display='none'">` : ''}
+                    <div class="name" style="cursor:pointer;text-decoration:underline dotted #555" onclick="showArtifactStats(${i},${aIdx})" title="Вклад артефакта в сборку">${escapeHtml(a.name_ru)}</div>
+                    <span class="quality-badge q-${escapeHtml(a.quality_name)}">${escapeHtml(a.quality_name)}</span>
+                    ${a.is_owned ? '<span class="owned-badge">В ХРАН</span>' : ''}
+                    ${a.ptn > 0 ? `<div class="ptn">+${escapeHtml(a.ptn)}${a.lot_ptn !== undefined && a.lot_ptn !== a.ptn ? ` <span style="color:#f0a050;font-size:.85em">(лот ptn=${escapeHtml(a.lot_ptn)})</span>` : ''}</div>` : ''}
+                    ${pctHtml}
+                    ${!a.is_owned ? `<div class="price">${a.buyout_price.toLocaleString('ru')} ₽ <span style="cursor:pointer;color:#53c353;font-size:.8em" onclick="showPriceHistory('${escapeHtml(a.item_id)}','${escapeHtml(a.name_ru)}')" title="История цен">📈</span></div>` : ''}
+                    <div class="stats" style="text-align:left">${statsHtml}</div>
+                </div>`;
+            });
+            let csHtml = '<div class="section-title">Суммарные статы (с защитой контейнера)</div>';
+            const csn = build.combined_stats_names || {};
+            for (const [k,v] of Object.entries(build.combined_stats)) {
+                // Check if this is a dangerous accumulation
+                const isDangerous = ['psycho_accumulation','radiation_accumulation','thermal_accumulation','biological_accumulation'].includes(k);
+                const isCold = k === 'frost_accumulation';
+                const threshold = isDangerous ? 0.5 : (isCold ? 1.0 : null);
+                const overThreshold = threshold !== null && v > threshold;
+                // Stats where POSITIVE value is a DEBUFF (bad): recoil_bonus, wiggle_bonus
+                const isInverted = k === 'recoil_bonus' || k === 'wiggle_bonus';
+                let valClass;
+                if (isDangerous || isCold) {
+                    // Accumulation: positive = danger (red), negative/zero = protection (green)
+                    valClass = (v > threshold) ? 'negative' : (v > 0 ? 'negative' : 'positive');
+                } else if (isInverted) {
+                    valClass = (v > 0) ? 'negative' : 'positive';
+                } else {
+                    valClass = (v >= 0) ? 'positive' : 'negative';
+                }
+                const thresholdStr = threshold !== null ? ` (≤${threshold})` : '';
+                csHtml += `<div class="stat-line"><span>${escapeHtml(csn[k]||k)}${thresholdStr}</span><span class="stat-val ${valClass}">${v>=0?'+':''}${v.toFixed(2)}</span></div>`;
+            }
+            html += `<div class="build-card" style="${!carryable ? 'border-color:#e94560' : ''}">
+                <div class="build-header">
+                    <span class="${carryClass}" style="background:${carryColor}">${carryIcon} #${i+1}</span>
+                    ${build.priority_stats ? Object.values(build.priority_stats).map(s =>
+                        `<span style="color:#53c353;font-weight:bold;font-size:1.05em">${s.name}: ${s.value > 0 ? '+' : ''}${Math.round(s.value*100)/100}</span>`
+                    ).join('<span style="color:#555;margin:0 4px">•</span>') : ''}
+                    <span class="build-score" style="font-size:0.8em;color:#666">очки: ${build.total_score}</span>
+                    ${build.effective_health ? `<span style="color:#4e9b2e;font-size:.85em" title="Эффективное здоровье">EHP: ${build.effective_health}</span>` : ''}
+                    ${(build.healing_per_second || build.derived_stats) ? `<span style="color:#2e7b9e;font-size:.85em" title="Процент лечения в секунду; не абсолютные HP/с">Лечение: ${build.derived_stats ? Number(build.derived_stats.healing_percent_per_second).toFixed(4) : build.healing_per_second}%/с</span>` : ''}
+                    ${build.derived_stats ? `<span style="color:#2e7b9e;font-size:.85em" title="Tooltip Wiki: EHP × процент / 100. Эквивалент восстановления урона от пуль, не обычные HP/с">Восстановление: ${Number(build.derived_stats.healing_ehp_per_second).toFixed(4)} EHP/с</span>` : ''}
+                    <span class="build-price">${build.total_price.toLocaleString('ru')} ₽</span>
+                    <span style="cursor:pointer;color:#2e7b9e;font-size:.8em;border:1px solid #2e7b9e;border-radius:4px;padding:1px 6px" onclick="toggleCompare(${i})" id="cmpBtn_${i}" title="Сравнить сборки">⇄ Сравнить</span>
+                </div>
+                ${warnHtml}
+                <div class="artifacts-grid">${cHtml}${armHtml}${aHtml}</div>
+                <div class="combined-stats">${csHtml}</div>
+                ${build.tips && build.tips.length > 0 ? (() => {
+                    let tipHtml = '<div class="tips-panel"><div style="font-size:.85em;color:#f0a050;margin-bottom:4px">💡 Советы</div>';
+                    build.tips.forEach(t => {
+                        if (t.type === 'research') {
+                            const bonuses = t.bonuses.map(b => `${b.desc} (ptn ${b.unlock_ptn})`).join(', ');
+                            tipHtml += `<div class="tip-row">🔬 <b>${t.artifact}</b> (сейчас ptn=${t.current_ptn}) — заресёрчить до: ${bonuses}</div>`;
+                        } else if (t.type === 'counter_art') {
+                            tipHtml += `<div class="tip-row">⚠️ <b>${t.artifact}</b> (${t.price.toLocaleString('ru')}₽) — чистый контр-арт, 0 приоритетных статов. Ресёрч откроет бонусы</div>`;
+                        } else if (t.type === 'threshold') {
+                            tipHtml += `<div class="tip-row">⚡ <b>${t.stat}</b> = ${t.value} близко к порогу ${t.threshold}</div>`;
+                        } else if (t.type === 'frost') {
+                            tipHtml += `<div class="tip-row">❄️ <b>Холод</b> = ${t.value} — не защищается контейнером (порог ${t.threshold})</div>`;
+                        } else if (t.type === 'owned') {
+                            tipHtml += `<div class="tip-row">📦 ${t.count} арт. из хранилища (бесплатно), аукцион: ${t.auction_price.toLocaleString('ru')}₽</div>`;
+                        }
+                    });
+                    tipHtml += '</div>';
+                    return tipHtml;
+                })() : ''}
+            </div>`;
+        });
+        results.innerHTML = html;
+    } catch(e) {
+        results.innerHTML = `<div class="empty">Ошибка: ${e.name === 'AbortError' ? 'Таймаут (15мин). Попробуйте уменьшить слоты контейнера или изменить приоритеты.' : e.message}</div>`;
+    } finally {
+        stopTimer();
+        btn.disabled = false;
+    }
+}
+
+function renderTemplateBuild(d, results) {
+    if (d.error) {
+        results.innerHTML = `<div class="empty">⚠ ${escapeHtml(d.error)}</div>`;
+        return;
+    }
+    const cs = d.computed_stats || {};
+    const stats = cs.combined_stats || {};
+    const ts = (d.template_stats || {}).combined_stats || {};
+    const fillPct = Math.round((d.filled_slots / d.template_slots) * 100);
+
+    let html = `<div style="margin-bottom:10px">
+        <div style="font-size:1.2em;color:#f0a050">📋 ${escapeHtml(d.build_name)} — шаблон lunar-zone</div>
+        <div style="color:#888;margin-top:4px">
+            Заполнено <b style="color:#53c353">${d.filled_slots}/${d.template_slots}</b> слотов ·
+            Цена: <b style="color:#f0a050">${d.total_price.toLocaleString('ru')} ₽</b> из ${d.budget.toLocaleString('ru')} ₽
+            ${d.lunar_url ? `· <a href="${d.lunar_url}" target="_blank" style="color:#e94560">↗ lunar-zone</a>` : ''}
+        </div>
+    </div>`;
+
+    // Dropped slots
+    if (d.dropped_slots && d.dropped_slots.length > 0) {
+        html += `<div style="background:#3a1a1a;border-radius:6px;padding:8px;margin-bottom:10px;border:1px solid #e94560">`;
+        html += `<div style="color:#e94560;font-size:.85em;margin-bottom:4px">⚠ Не влезло в бюджет (${d.dropped_slots.length}):</div>`;
+        d.dropped_slots.forEach(ds => {
+            html += `<div style="color:#e94560;font-size:.8em">  ✗ Слот ${ds.slot}: ${escapeHtml(ds.name_ru)} (${ds.item_id})</div>`;
+        });
+        html += `</div>`;
+    }
+
+    // Selected lots
+    if (d.selected_lots && d.selected_lots.length > 0) {
+        html += `<div class="artifacts-grid">`;
+        d.selected_lots.forEach(lot => {
+            html += `<div class="artifact-card">
+                <div class="name">${escapeHtml(lot.item_id)}</div>
+                <div style="font-size:.8em;color:#888">q${lot.quality} ptn=${lot.ptn} ap=${lot.art_percent}%</div>
+                <div class="build-price">${lot.buyout_price.toLocaleString('ru')} ₽</div>
+            </div>`;
+        });
+        html += `</div>`;
+    }
+
+    // Stats comparison: actual vs template
+    if (Object.keys(stats).length > 0) {
+        html += `<div style="margin-top:10px"><div style="color:#888;margin-bottom:4px">Статы (факт / шаблон):</div>`;
+        const keyStats = ['bullet_dmg_factor','tear_dmg_factor','explosion_dmg_factor','health_bonus',
+            'max_weight_bonus','speed_modifier','sprint_speed_modifier','stamina_bonus',
+            'stamina_regeneration_bonus','regeneration_bonus','heal_efficiency','stopping_protection',
+            'psycho_accumulation','radiation_accumulation','thermal_accumulation'];
+        html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:4px">`;
+        keyStats.forEach(k => {
+            const v = stats[k];
+            if (v === undefined) return;
+            const tv = ts[k];
+            const match = tv !== undefined && Math.abs(v - tv) < 0.01;
+            const color = match ? '#53c353' : (tv !== undefined ? '#f0a050' : '#e0e0e0');
+            const label = (cs.combined_stats_names || {})[k] || k;
+            html += `<div style="background:#16213e;border-radius:4px;padding:4px 8px;font-size:.8em">
+                <span style="color:#888">${escapeHtml(label)}:</span>
+                <b style="color:${color}">${v.toFixed(2)}</b>
+                ${tv !== undefined ? `<span style="color:#555">/${tv.toFixed(2)}</span>` : ''}
+            </div>`;
+        });
+        html += `</div>`;
+        const ehp = cs.effective_health || 0;
+        const teh = (d.template_stats || {}).effective_health || 0;
+        html += `<div style="margin-top:6px;font-size:.9em">
+            <b style="color:${Math.abs(ehp-teh)<0.1?'#53c353':'#f0a050'}">EHP: ${ehp.toFixed(1)}</b>
+            <span style="color:#555">/ ${teh.toFixed(1)}</span>
+        </div>`;
+        html += `</div>`;
+    }
+
+    results.innerHTML = html;
+}
+document.getElementById('buildBtn').addEventListener('click', findBuilds);
+document.getElementById('buildMode').addEventListener('change', function() {
+    const isTemplate = this.value === 'template';
+    document.getElementById('templateRow').style.display = isTemplate ? 'block' : 'none';
+    if (!isTemplate) applyMode(this.value);
+});
+document.getElementById('addOwnedBtn').addEventListener('click', addOwned);
+// Auto-save owned artifacts on any change
+document.getElementById('ownedList').addEventListener('change', saveOwnedArtifacts);
+document.getElementById('ownedList').addEventListener('input', saveOwnedArtifacts);
+document.getElementById('ownedList').addEventListener('click', (e) => {
+    if (e.target.classList.contains('remove')) setTimeout(saveOwnedArtifacts, 100);
+});
+
+// --- Refresh auction button ---
+document.getElementById('refreshBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('refreshBtn');
+    const results = document.getElementById('results');
+    btn.disabled = true;
+    btn.textContent = '⟳ Обновление...';
+    try {
+        const r = await fetch('/api/refresh-auction', {method: 'POST'});
+        const d = await r.json();
+        if (d.status === 'already_running') {
+            results.innerHTML = `<div class="loading">⟳ Обновление уже идёт: ${d.done}/${d.total}...</div>`;
+        }
+        // Poll progress
+        const poll = setInterval(async () => {
+            try {
+                const sr = await fetch('/api/refresh-status');
+                const sd = await sr.json();
+                if (sd.error) {
+                    clearInterval(poll);
+                    btn.disabled = false;
+                    btn.textContent = '⟳ Аукцион';
+                    results.innerHTML = `<div class="empty">Ошибка обновления: ${sd.error}</div>`;
+                    return;
+                }
+                if (!sd.running) {
+                    clearInterval(poll);
+                    btn.disabled = false;
+                    btn.textContent = '⟳ Аукцион';
+                    results.innerHTML = `<div class="empty">Обновление завершено (${sd.done} предметов). Нажмите «Подобрать».</div>`;
+                    loadStats();
+                    return;
+                }
+                const pct = sd.total > 0 ? Math.round(sd.done / sd.total * 100) : 0;
+                results.innerHTML = `<div class="loading" id="loadingBox">
+                    <div style="font-size:1.1em;margin-bottom:8px">⟳ Обновление аукциона: ${sd.done}/${sd.total}</div>
+                    <div style="background:#1a1a2e;border-radius:4px;height:8px;width:300px;overflow:hidden">
+                        <div style="background:#e94560;height:100%;width:${pct}%;transition:width 0.5s"></div>
+                    </div>
+                    <div style="font-size:.75em;color:#555;margin-top:4px">${pct}%</div>
+                </div>`;
+            } catch(e) { clearInterval(poll); }
+        }, 2000);
+    } catch(e) {
+        btn.disabled = false;
+        btn.textContent = '⟳ Аукцион';
+        results.innerHTML = `<div class="empty">Ошибка: ${e.message}</div>`;
+    }
+});
+
+// --- Build prompt parser (GLM-5.2 LLM via omp) ---
+async function applyParseResult(d, btn, promptText) {
+    window._lastPromptText = promptText || '';
+    if (d.priorities) {
+        for (const [pid, weight] of Object.entries(d.priorities)) {
+            const el = document.getElementById('prio_' + pid);
+            if (el) el.value = weight;
+        }
+    }
+    if (d.min_thresholds) {
+        for (const [pid, val] of Object.entries(d.min_thresholds)) {
+            const el = document.getElementById('min_' + pid);
+            if (el) el.value = val;
+        }
+    }
+    if (d.max_thresholds) {
+        window._maxThresholds = d.max_thresholds;
+        for (const [pid, val] of Object.entries(d.max_thresholds)) {
+            const el = document.getElementById('max_' + pid);
+            if (el) el.value = val;
+        }
+    } else {
+        window._maxThresholds = null;
+        document.querySelectorAll('[id^="max_"]').forEach(el => el.value = '');
+    }
+    if (d.carryable_only !== undefined) {
+        document.getElementById('carryableOnly').value = d.carryable_only ? '1' : '0';
+    }
+    if (d.allow_duplicates !== undefined) {
+        document.getElementById('allowDuplicates').value = d.allow_duplicates ? '1' : '0';
+    }
+    if (d.container_id) {
+        document.getElementById('containerId').value = d.container_id;
+    }
+    if (d.conservative !== undefined) {
+        document.getElementById('conservativeToggle').checked = d.conservative;
+        updateQualityConservativeHint();
+    }
+    if (d.stock_only !== undefined) {
+        document.getElementById('stockOnlyToggle').checked = d.stock_only;
+    }
+    window._excludeIds = d.exclude || null;
+    if (d.budget) {
+        document.getElementById('budget').value = d.budget;
+    }
+    btn.textContent = '🤖 ИИ';
+    findBuilds();
+}
+
+document.getElementById('aiParseBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('aiParseBtn');
+    const text = document.getElementById('aiPrompt').value.trim();
+    if (!text) return;
+    btn.disabled = true;
+    let elapsed = 0;
+    btn.textContent = '🤖 Думаю...';
+    const timer = setInterval(() => { elapsed += 5; btn.textContent = `🤖 ${elapsed}с...`; }, 5000);
+    try {
+        const r = await fetch('/api/parse-prompt', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text})
+        });
+        clearInterval(timer);
+        const d = await r.json();
+        await applyParseResult(d, btn, text);
+    } catch(e) {
+        clearInterval(timer);
+        btn.textContent = '🤖 ИИ';
+        alert('Ошибка ИИ: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+});
+// --- Price History Popup ---
+async function showPriceHistory(itemId, name) {
+    let popup = document.getElementById('pricePopup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'pricePopup';
+        popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#16213e;border:1px solid #e94560;border-radius:10px;padding:20px;z-index:9999;min-width:400px;max-width:600px;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+        document.body.appendChild(popup);
+    }
+    popup.innerHTML = `<div style="text-align:center;color:#888">⟳ Загрузка...</div>`;
+    popup.style.display = 'block';
+    // Close on background click
+    popup.onclick = (e) => { if (e.target === popup) popup.style.display = 'none'; };
+    try {
+        const r = await fetch(`/api/price-history?item_id=${itemId}&limit=100`);
+        const d = await r.json();
+        if (!d.history || d.history.length === 0) {
+            popup.innerHTML = `<div style="color:#888;text-align:center">${escapeHtml(name)}: нет истории продаж</div>`;
+            return;
+        }
+        const prices = d.history.map(h => h.price);
+        const minP = d.min_price, maxP = d.max_price, avgP = d.avg_price;
+        const curP = d.current_min_price;
+        // Simple SVG sparkline
+        const w = 500, h = 80, pad = 5;
+        const range = maxP - minP || 1;
+        const pts = prices.map((p, i) => {
+            const x = pad + (i / (prices.length - 1 || 1)) * (w - 2*pad);
+            const y = h - pad - ((p - minP) / range) * (h - 2*pad);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(' ');
+        const sparkline = `<svg width="${w}" height="${h}" style="display:block;margin:8px auto">
+            <polyline points="${pts}" fill="none" stroke="#e94560" stroke-width="1.5"/>
+        </svg>`;
+        popup.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <div style="color:#e94560;font-weight:bold">${escapeHtml(name)}</div>
+                <span style="cursor:pointer;color:#888;font-size:1.2em" onclick="document.getElementById('pricePopup').style.display='none'">✕</span>
+            </div>
+            <div style="font-size:.8em;color:#888;margin-bottom:6px">Продаж: ${d.count} | Мин: ${minP.toLocaleString('ru')} ₽ | Макс: ${maxP.toLocaleString('ru')} ₽ | Среднее: ${avgP.toLocaleString('ru')} ₽</div>
+            ${sparkline}
+            ${curP ? `<div style="text-align:center;color:#53c353;font-size:.9em;margin-top:6px">Текущая мин. цена: ${curP.toLocaleString('ru')} ₽</div>` : '<div style="text-align:center;color:#666;font-size:.8em;margin-top:6px">Нет активных лотов</div>'}
+        `;
+    } catch(e) {
+        popup.innerHTML = `<div style="color:#e94560;text-align:center">Ошибка: ${escapeHtml(e.message)}</div>`;
+    }
+}
+// --- Build Comparison Side-by-Side ---
+function toggleCompare(idx) {
+    const builds = window._lastBuilds || [];
+    if (!builds[idx]) return;
+    const btn = document.getElementById('cmpBtn_' + idx);
+    const ci = window._compareBuilds.indexOf(idx);
+    if (ci >= 0) {
+        window._compareBuilds.splice(ci, 1);
+        if (btn) { btn.style.background = ''; btn.style.color = '#2e7b9e'; }
+    } else {
+        if (window._compareBuilds.length >= 2) {
+            // Replace oldest
+            const old = window._compareBuilds.shift();
+            const oldBtn = document.getElementById('cmpBtn_' + old);
+            if (oldBtn) { oldBtn.style.background = ''; oldBtn.style.color = '#2e7b9e'; }
+        }
+        window._compareBuilds.push(idx);
+        if (btn) { btn.style.background = '#2e7b9e'; btn.style.color = '#fff'; }
+    }
+    if (window._compareBuilds.length === 2) showComparison();
+    else { const cp = document.getElementById('comparePanel'); if (cp) cp.remove(); }
+}
+function showComparison() {
+    const builds = window._lastBuilds || [];
+    const [i1, i2] = window._compareBuilds;
+    const b1 = builds[i1], b2 = builds[i2];
+    if (!b1 || !b2) return;
+    let panel = document.getElementById('comparePanel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'comparePanel';
+        panel.className = 'build-card';
+        panel.style.borderColor = '#2e7b9e';
+        document.getElementById('results').insertBefore(panel, document.getElementById('results').firstChild);
+    }
+    const cs1 = b1.combined_stats || {}, cs2 = b2.combined_stats || {};
+    const allKeys = new Set([...Object.keys(cs1), ...Object.keys(cs2)]);
+    let rows = '';
+    for (const k of allKeys) {
+        const v1 = cs1[k] || 0, v2 = cs2[k] || 0;
+        const diff = v2 - v1;
+        const name = (b1.combined_stats_names || {})[k] || k;
+        const isAcc = k.endsWith('_accumulation');
+        const goodColor = isAcc ? '#e94560' : '#53c353';  // accumulation: increase = bad (red)
+        const badColor = isAcc ? '#53c353' : '#e94560';   // accumulation: decrease = good (green)
+        const color = Math.abs(diff) < 0.01 ? '#888' : (diff > 0 ? goodColor : badColor);
+        rows += `<tr><td style="color:#888;font-size:.8em">${escapeHtml(name)}</td>` +
+            `<td style="text-align:right;color:#888">${v1.toFixed(2)}</td>` +
+            `<td style="text-align:right;color:${color};font-weight:bold">${diff > 0 ? '+' : ''}${diff.toFixed(2)}</td>` +
+            `<td style="text-align:right;color:#888">${v2.toFixed(2)}</td></tr>`;
+    }
+    panel.innerHTML = `
+        <div class="build-header">
+            <span class="build-rank" style="background:#2e7b9e">⇄ Сравнение</span>
+            <span style="color:#888;font-size:.8em">Сборка #${i1+1} vs #${i2+1}</span>
+            <span style="cursor:pointer;color:#888;margin-left:auto" onclick="document.getElementById('comparePanel').remove();window._compareBuilds=[];document.querySelectorAll('[id^=cmpBtn_]').forEach(b=>{b.style.background='';b.style.color='#2e7b9e'})">✕</span>
+        </div>
+        <table style="width:100%;font-size:.85em">
+            <thead><tr><th style="text-align:left;color:#666">Стат</th><th style="color:#888">#${i1+1}</th><th style="color:#666">Δ</th><th style="color:#888">#${i2+1}</th></tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}
+// --- Real-time Artifact Stat Contribution ---
+function showArtifactStats(buildIdx, artIdx) {
+    const builds = window._lastBuilds || [];
+    const build = builds[buildIdx];
+    if (!build || !build.artifacts[artIdx]) return;
+    const a = build.artifacts[artIdx];
+    const cs = build.combined_stats || {};
+    const sn = a.stats_names || {};
+    let popup = document.getElementById('pricePopup') || (() => {
+        const d = document.createElement('div');
+        d.id = 'pricePopup';
+        d.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#16213e;border:1px solid #e94560;border-radius:10px;padding:20px;z-index:9999;min-width:400px;max-width:500px;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+        document.body.appendChild(d);
+        return d;
+    })();
+    popup.style.display = 'block';
+    popup.onclick = (e) => { if (e.target === popup) popup.style.display = 'none'; };
+    let rows = '';
+    for (const [k, v] of Object.entries(a.stats)) {
+        const name = escapeHtml(sn[k] || k);
+        const total = cs[k] || 0;
+        const pct = total !== 0 ? (v / total * 100).toFixed(0) : '—';
+        const color = v >= 0 ? '#53c353' : '#e94560';
+        rows += `<tr><td style="color:#888;font-size:.8em">${name}</td>` +
+            `<td style="text-align:right;color:${color}">${v >= 0 ? '+' : ''}${v.toFixed(2)}</td>` +
+            `<td style="text-align:right;color:#666;font-size:.8em">${pct}%</td></tr>`;
+    }
+    popup.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="color:#e94560;font-weight:bold">${escapeHtml(a.name_ru)}</div>
+            <span style="cursor:pointer;color:#888;font-size:1.2em" onclick="document.getElementById('pricePopup').style.display='none'">✕</span>
+        </div>
+        <div style="font-size:.8em;color:#666;margin-bottom:6px">${escapeHtml(a.quality_name)} | ptn=${a.ptn} | ${a.art_percent}% | ${a.is_owned ? 'В ХРАН' : a.buyout_price.toLocaleString('ru') + ' ₽'}</div>
+        <table style="width:100%">
+            <thead><tr><th style="text-align:left;color:#666;font-size:.8em">Стат</th><th style="color:#666;font-size:.8em">Значение</th><th style="color:#666;font-size:.8em">Вклад</th></tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}
+// ─── Meta-builds optimizer ───
+let metaStyle = 'balanced';
+function fmtBudget(v) {
+    if (v >= 1e9) return (v/1e9).toFixed(1) + 'B';
+    if (v >= 1e6) return (v/1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return (v/1e3).toFixed(0) + 'K';
+    return String(v);
+}
+document.querySelectorAll('.meta-style-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.meta-style-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        metaStyle = btn.dataset.style;
+    });
+});
+const metaBudgetInput = document.getElementById('metaBudget');
+const metaBudgetVal = document.getElementById('metaBudgetVal');
+metaBudgetInput.addEventListener('input', () => {
+    metaBudgetVal.textContent = fmtBudget(parseInt(metaBudgetInput.value));
+});
+metaBudgetVal.textContent = fmtBudget(parseInt(metaBudgetInput.value));
+
+document.getElementById('metaBuildBtn').addEventListener('click', async () => {
+    const budget = parseInt(metaBudgetInput.value);
+    const btn = document.getElementById('metaBuildBtn');
+    btn.disabled = true; btn.textContent = '⏳ Ищем...';
+    document.getElementById('results').innerHTML = '<div class="loading">🤖 Подбираем лучшие сборки (' + fmtBudget(budget) + ' ₽, ' + metaStyle + ')...</div>';
+    try {
+        const metaParams = new URLSearchParams({budget, style: metaStyle, top_n: 10, carryable_only: 1});
+        if (document.getElementById('stockOnlyToggle').checked) metaParams.append('stock_only', 'true');
+        const selectedArmor = document.getElementById('armorId').value;
+        if (selectedArmor) metaParams.append('armor_id', selectedArmor);
+        const resp = await fetch('/api/meta-builds?' + metaParams.toString());
+        const data = await resp.json();
+        if (data.builds && data.builds.length > 0) {
+            displayMetaResults(data);
+        } else {
+            document.getElementById('results').innerHTML = '<div class="empty">Поиск не смог подтвердить наличие или отсутствие допустимой сборки.</div>';
+        }
+    } catch (e) {
+        document.getElementById('results').innerHTML = `<div class="empty">Ошибка: ${escapeHtml(e.message)}</div>`;
+    }
+    btn.disabled = false; btn.textContent = '🏆 Найти лучшие';
+});
+
+document.getElementById('metaSweepBtn').addEventListener('click', async () => {
+    const budget = parseInt(metaBudgetInput.value);
+    const minB = Math.max(10000, Math.floor(budget / 50));
+    const btn = document.getElementById('metaSweepBtn');
+    btn.disabled = true; btn.textContent = '⏳ Развёртка...';
+    document.getElementById('results').innerHTML = '<div class="loading">📈 Анализируем прогрессию от ' + fmtBudget(minB) + ' до ' + fmtBudget(budget) + '...</div>';
+    try {
+        const sweepParams = new URLSearchParams({min_budget: minB, max_budget: budget, steps: 8, style: metaStyle, top_n: 3});
+        if (document.getElementById('stockOnlyToggle').checked) sweepParams.append('stock_only', 'true');
+        const selectedArmor = document.getElementById('armorId').value;
+        if (selectedArmor) sweepParams.append('armor_id', selectedArmor);
+        const resp = await fetch('/api/budget-sweep?' + sweepParams.toString());
+        const data = await resp.json();
+        displayBudgetSweep(data);
+    } catch (e) {
+        document.getElementById('results').innerHTML = `<div class="empty">Ошибка: ${escapeHtml(e.message)}</div>`;
+    }
+    btn.disabled = false; btn.textContent = '📈 Прогрессия';
+});
+
+function displayMetaResults(data) {
+    const builds = data.builds || [];
+    let html = `<div class="panel" style="border-color:#e94560">
+        <h2>🏆 Лучшие сборки — ${fmtBudget(data.budget)} ₽ — ${escapeHtml(data.style)}</h2>
+        <div style="font-size:.8em;color:#888;margin-bottom:12px">
+            Контейнеры: ${escapeHtml((data.containers_tried||[]).join(', '))}
+            • ${data.builds_found} сборок • ${data.elapsed_sec}с
+            ${data.cached ? '• из кэша' : ''}
+        </div>`;
+    builds.forEach((build, i) => {
+        const cs = build.combined_stats || {};
+        const csn = build.combined_stats_names || {};
+        const cont = build.container || {};
+        const ehp = build.effective_health || 0;
+        const arts = build.artifacts || [];
+        html += `<div class="build-card">
+            <div class="build-header">
+                <span class="build-rank">#${i+1}</span>
+                <span class="build-score">очки: ${build.total_score?.toFixed(1)}</span>
+                <span style="color:#4e9b2e;font-size:.85em" title="Эффективное здоровье">EHP: ${ehp.toFixed(1)}</span>
+                <span class="build-price">${build.total_price?.toLocaleString('ru')} ₽</span>
+                <span style="color:#2e7b9e;font-size:.8em;border:1px solid #2e7b9e;border-radius:4px;padding:1px 6px">${escapeHtml(cont.name_ru || '?')}</span>
+                ${build.carryable ? '' : '<span style="color:#e94560;font-size:.8em">⚠️ неносибельна</span>'}
+            </div>
+            <div class="artifacts-grid">
+                ${arts.map(a => `<div class="artifact-card">
+                    <div class="name">${escapeHtml(a.name_ru || '')}</div>
+                    <span class="quality-badge q-${escapeHtml(a.quality_name||'Common')}">${escapeHtml(a.quality_name||'')}</span>
+                    <div class="price">${a.is_owned ? 'В ХРАН' : (a.buyout_price||0).toLocaleString('ru') + ' ₽'}</div>
+                </div>`).join('')}
+            </div>
+            <div class="combined-stats">
+                <div class="section-title">Суммарные статы</div>
+                ${Object.entries(cs).slice(0, 12).map(([k,v]) =>
+                    `<div class="stat-line"><span style="color:#888">${escapeHtml(csn[k] || k)}</span><span class="stat-val ${v>=0?'positive':'negative'}">${v.toFixed(1)}</span></div>`
+                ).join('')}
+            </div>
+        </div>`;
+    });
+    html += '</div>';
+    document.getElementById('results').innerHTML = html;
+}
+
+function displayBudgetSweep(data) {
+    const steps = data.steps || [];
+    let html = `<div class="panel" style="border-color:#e94560">
+        <h2>📈 Прогрессия — ${escapeHtml(data.style)}</h2>
+        <div style="font-size:.8em;color:#888;margin-bottom:12px">Как меняется оптимальная сборка с ростом бюджета</div>
+        <div class="meta-progression">`;
+    steps.forEach(step => {
+        const b = step.best_build;
+        if (b) {
+            const cont = b.container || {};
+            const arts = (b.artifacts||[]).map(a => escapeHtml((a.name_ru||'').slice(0,10))).join(', ');
+            html += `<div class="meta-step">
+                <div style="color:#f0a050;font-weight:bold;font-size:1.1em">${fmtBudget(step.budget)} ₽</div>
+                <div style="color:#53c353;font-size:.85em">score: ${step.best_score?.toFixed(0)}</div>
+                <div style="color:#4e9b2e;font-size:.8em">EHP: ${step.best_ehp?.toFixed(1)}</div>
+                <div style="color:#2e7b9e;font-size:.8em">${escapeHtml((cont.name_ru||'').slice(0,14))}</div>
+                <div style="color:#888;font-size:.75em;margin-top:4px">${arts}</div>
+            </div>`;
+        } else {
+            html += `<div class="meta-step" style="opacity:.3">
+                <div style="color:#f0a050;font-weight:bold">${fmtBudget(step.budget)} ₽</div>
+                <div style="color:#666;font-size:.85em">нет сборок</div>
+            </div>`;
+        }
+    });
+    html += '</div></div>';
+    document.getElementById('results').innerHTML = html;
+}
+// --- FIX: Add error handling to async init functions ---
+loadStats().catch(err => console.error('loadStats failed:', err));
+loadContainers().catch(err => console.error('loadContainers failed:', err));
+loadArtefacts().catch(err => console.error('loadArtefacts failed:', err));
+loadAllStats().catch(err => console.error('loadAllStats failed:', err));
+loadArmors().catch(err => console.error('loadArmors failed:', err));
+// Load saved owned artifacts after artefacts are loaded
+loadArtefacts().then(loadOwnedArtifacts).catch(err => console.error('loadOwnedArtifacts failed:', err));
+</script>
+</html>

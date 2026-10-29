@@ -1,0 +1,50 @@
+{
+  "provenance": "User-provided screenshots of https://stalzone.wiki/builds-calculator; visual values transcribed, not source-code verified",
+  "reference_group": "same visible six-artifact container, armor toggled",
+  "container": {"name": "КРАБ-6", "slots": 6, "protection_percent_display": 60, "effectiveness_percent_display": 97},
+  "artifacts": [
+    {"name_display": "Проклятая р...", "enhancement_display": 15, "quality_percent_display": 160, "note": "truncated on screenshot, no inferred complete name"},
+    {"name_display": "Бубльгум", "count": 3, "enhancement_display": 15, "quality_percent_display": 115},
+    {"name_display": "Опал", "enhancement_display": 15, "quality_percent_display": 115},
+    {"name_display": "Криоген", "enhancement_display": 15, "quality_percent_display": 160}
+  ],
+  "cases": [
+    {
+      "id": "centurion",
+      "armor_name_display": "Центурион",
+      "ehp_display": 647.32,
+      "healing_percent_display": 0.50,
+      "healing_absolute_tooltip_hp_per_sec_display": 3.24,
+      "bullet_dmg_factor_display": 566.06,
+      "health_bonus_percent_display": -2.81,
+      "movement_speed_percent_display": -9.37,
+      "sprint_speed_percent_display": -4.37,
+      "stamina_bonus_percent_display": 31.76,
+      "stamina_regeneration_percent_display": 11.50,
+      "carry_weight_display": 45.78,
+      "test_0_5_percent_of_display_ehp": 3.2366,
+      "test_rounded_to_2": 3.24
+    },
+    {
+      "id": "no_armor",
+      "armor_name_display": null,
+      "ehp_display": 305.97,
+      "healing_percent_display": 0.50,
+      "healing_absolute_tooltip_hp_per_sec_display": 1.53,
+      "bullet_dmg_factor_display": 214.82,
+      "health_bonus_percent_display": -2.81,
+      "movement_speed_percent_display": -4.37,
+      "sprint_speed_percent_display": -4.37,
+      "stamina_bonus_percent_display": 41.76,
+      "stamina_regeneration_percent_display": 11.50,
+      "carry_weight_display": 20.78,
+      "test_0_5_percent_of_display_ehp": 1.52985,
+      "test_rounded_to_2": 1.53
+    }
+  ],
+  "hypothesis": "healing_absolute = ehp * healing_percent / 100",
+  "universal_formula_verified": false,
+  "site_source_code_examined": false,
+  "user_confirmed": "artifacts in the shown setup did not give health regeneration bonuses",
+  "caution": "Numbers are UI-rounded; additional scenarios and independent source examination required"
+}

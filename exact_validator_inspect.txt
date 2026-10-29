@@ -1,0 +1,456 @@
+
+==================== _process_combo ====================
+
+def _process_combo(combo, container, art_price, priorities, min_thresholds, all_builds,
+                   effective_budget: int = 0, stat_max: dict | None = None,
+                   min_budget: bool = False, max_thresholds: dict | None = None):
+    """Process one combination: sum → container protection → bonus stats → stopping → score."""
+    if effective_budget and art_price > effective_budget:
+        return
+
+    # No counter-art limit — score and carryability naturally balance.
+    # A build with too many counter-arts will have low priority stats → low score.
+
+    # Sort by item_id for deterministic order
+    combo = tuple(sorted(combo, key=lambda o: o.item_id))
+
+    combined_stats_raw: dict[str, float] = {}
+    combined_names: dict[str, str] = {}
+    stat_origins: dict[str, str] = {}
+    total_score = 0.0
+
+    for opt in combo:
+        qr = QUALITY_RANGES.get(opt.quality, QUALITY_RANGES[0])
+        stats_c, stats_r, sn, _ = compute_artifact_stats(
+            opt.base_stats, opt.bonus_stats, opt.unlocked_bonus_ids,
+            opt.art_percent, opt.ptn, qr["min"], qr["range"], opt.stats_random,
+            container.inner_protection, container.effectiveness,
+        )
+        for stat, val in stats_c.items():
+            combined_stats_raw[stat] = combined_stats_raw.get(stat, 0.0) + val
+            if stat not in combined_names:
+                combined_names[stat] = sn.get(stat, stat)
+            if stat not in stat_origins:
+                stat_origins[stat] = "artefact"
+
+    # 1. Container protection at BUILD level (JS counterStatsByContainer)
+    combined_stats = _apply_build_container_protection(
+        combined_stats_raw, stat_origins, container.inner_protection
+    )
+
+    # 2. Container bonus stats (e.g. +6.2 speed, +40 weight) — after protection
+    if container.bonus_stats:
+        for pid, data in container.bonus_stats.items():
+            val = data.get("value", 0) if isinstance(data, dict) else data
+            if val:
+                combined_stats[pid] = combined_stats.get(pid, 0.0) + val
+                combined_names[pid] = data.get("name_ru", pid) if isinstance(data, dict) else pid
+
+    # 3. stopping_protection recalc (build level)
+    _recalculate_stopping_protection(combined_stats)
+    # Apply reaction bonuses (JS applyReactionBonuses)
+    combined_stats, _ = apply_reaction_bonuses(combined_stats)
+
+    # 4. Min/max thresholds
+    for prop_id, min_val in (min_thresholds or {}).items():
+        if combined_stats.get(prop_id, 0) < min_val:
+            return
+    for prop_id, max_val in (max_thresholds or {}).items():
+        if combined_stats.get(prop_id, 0) > max_val:
+            return
+
+    # 5. Pure stat value for sorting: raw sum of max-weight priority stats.
+    #    No normalization, no penalties — sort by actual stat value, not score.
+    _max_w = max((w for w in priorities.values() if w > 0), default=0)
+    priority_value = 0.0
+    for _pid, _w in priorities.items():
+        if _w == _max_w and _w > 0:
+            _val = combined_stats.get(_pid, 0.0)
+            if _to_full_key(_pid) in DANGER_THRESHOLDS:
+                _val = -_val
+            priority_value += _val
+
+    # 6. Score (for logging/fallback), carryability, penalties
+    if min_budget:
+        total_score = -1.0 * art_price
+    else:
+        total_score = _score_build(combined_stats, priorities, stat_max, is_build=True)
+        # Price balance: only penalize OVERPRICED + dominant arts
+        _balance_hit = False
+        for o in combo:
+            if o.hist_avg_price > 0:
+                _ofair = o.hist_avg_price * (1.0 + o.ptn * 0.03)
+                _ratio = o.buyout_price / _ofair if _ofair > 0 else 0
+                if _ratio > 1.5 and o.buyout_price > art_price * 0.35:
+                    _balance_hit = True
+                    total_score -= (_ratio - 1.5) * 2.0
+        if _balance_hit:
+            total_score *= 0.85
+        # Negative non-priority stat penalty
+        for prop_id, val in combined_stats.items():
+            if prop_id in priorities:
+                continue
+            if val < -0.5 and _to_full_key(prop_id) not in DANGER_THRESHOLDS:
+                total_score += val * 0.3
+    # Danger threshold penalty (hard + soft)
+    for prop_id, val in combined_stats.items():
+        fkey = _to_full_key(prop_id)
+        if fkey in DANGER_THRESHOLDS:
+            threshold = DANGER_THRESHOLDS[fkey]
+            if val > threshold:
+                total_score -= (val - threshold) * 1000  # hard: uncarryable
+            elif val > 0:
+                w = priorities.get(prop_id, 5.0)
+                total_score -= (val / threshold) * w * 0.3  # soft: near-limit penalty
+
+    carryable, warnings = check_carryability(combined_stats)
+
+    _build_obj = ArtifactBuild(
+        artifacts=list(combo),
+        container=container if container.item_id else None,
+        total_price=art_price,
+        total_score=total_score,
+        priority_value=priority_value,
+        combined_stats=combined_stats,
+        combined_stats_names=combined_names,
+        carryable=carryable,
+        carryability_warnings=warnings,
+        priorities=priorities,
+    )
+    _carry_analysis = analyze_build_carryability(_build_obj)
+    _build_obj.carryability_analysis = _carry_analysis
+    _build_obj.guaranteed_carryable = _carry_analysis.get("guaranteed_carryable", True)
+    all_builds.append(_build_obj)
+
+
+==================== check_carryability ====================
+
+def check_carryability(combined_stats: dict) -> tuple[bool, list]:
+    """Check if build is carryable. Only POSITIVE accumulation exceeds the output rate.
+
+    val <= threshold → carryable. Negative = counter-art (safe).
+    """
+    warnings = []
+    for prop_id, val in combined_stats.items():
+        full_key = _to_full_key(prop_id)
+        if full_key not in DANGER_THRESHOLDS:
+            continue
+        threshold = DANGER_THRESHOLDS[full_key]
+        if val > threshold:
+            warnings.append(f"Носибельность превышена: {prop_id} = {val:.4f} (макс {threshold})")
+    return len(warnings) == 0, warnings
+
+
+==================== _get_max_carryable_count ====================
+
+def _get_max_carryable_count(opt, n_slots: int) -> int:
+    """Возвращает максимальное кол-во штук артефакта без перегруза по заражению."""
+    max_count = n_slots
+    for pid, val in opt.stats.items():
+        fkey = _to_full_key(pid)
+        if fkey in DANGER_THRESHOLDS and val > 0:
+            limit = DANGER_THRESHOLDS[fkey]
+            allowed = int(limit // val) if val > 0 else n_slots
+            max_count = min(max_count, max(1, allowed))
+    return max_count
+
+
+==================== BEAM SEARCH ====================
+
+def search(candidates, k, budget, max_counter, prot_mult,
+           cont_bonus_dict, stat_max, priorities, min_thresholds, n_keep,
+           allow_duplicates=False, min_budget=False, require_carry=True,
+           beam_width=2000, max_thresholds=None):
+    """Beam search over C(n, k) combinations.
+
+    Returns (scores, combos) -- same format as Numba search.
+    combos[i] = array of candidate indices into the candidates list.
+    """
+    n = len(candidates)
+    if n < k or k < 1:
+        return np.array([]), np.zeros((0, max(k, 1)), dtype=np.int32)
+
+    # ---- Build matrices (same logic as Numba search) ----
+    all_keys = set()
+    all_keys.update(priorities.keys())
+    all_keys.update(min_thresholds.keys())
+    all_keys.update(_DANGER_KEYS)
+    non_danger = sorted(all_keys - set(_DANGER_KEYS))
+    stat_keys = _DANGER_KEYS + non_danger
+    n_stats = len(stat_keys)
+
+    raw_mx = np.zeros((n, n_stats), dtype=np.float64)
+    w_mx = np.zeros((n, n_stats), dtype=np.float64)
+    for i, opt in enumerate(candidates):
+        for j, key in enumerate(stat_keys):
+            val = opt.stats.get(key, 0.0)
+            raw_mx[i, j] = val
+            w = priorities.get(key, 0.0)
+            if w > 0:
+                fkey = _to_full_key(key)
+                v = -val if fkey in DANGER_THRESHOLDS else val
+                mx = stat_max.get(key, 1.0)
+                if mx > 0:
+                    v = v / mx
+                w_mx[i, j] = v * w
+
+    prices = np.array([o.buyout_price for o in candidates], dtype=np.float64)
+    is_counter = np.array([_is_counter_art(o) for o in candidates], dtype=np.float64)
+
+    # Container bonus
+    b_idx_list, b_val_list = [], []
+    for key, val in cont_bonus_dict.items():
+        if key in stat_keys:
+            b_idx_list.append(stat_keys.index(key))
+            b_val_list.append(val)
+    n_b = len(b_idx_list)
+    b_idx_arr = np.array(b_idx_list, dtype=np.int32) if n_b else np.zeros(0, dtype=np.int32)
+    b_val_arr = np.array(b_val_list, dtype=np.float64) if n_b else np.zeros(0, dtype=np.float64)
+
+    # EHP indices
+    hp_idx = stat_keys.index("health_bonus") if "health_bonus" in stat_keys else -1
+    bul_idx = stat_keys.index("bullet_dmg_factor") if "bullet_dmg_factor" in stat_keys else -1
+    hp_w = float(priorities.get("health_bonus", 0.0))
+    bul_w = float(priorities.get("bullet_dmg_factor", 0.0))
+    if hp_idx >= 0 and bul_idx >= 0 and hp_w > 0 and bul_w > 0:
+        ehp_w = (hp_w + bul_w) / 2.0
+        max_ehp = max(
+            (stat_max.get("health_bonus", 1.0) * stat_max.get("bullet_dmg_factor", 1.0)) ** 0.5,
+            1.0,
+        )
+    else:
+        ehp_w = 0.0
+        max_ehp = 0.0
+
+    # Stopping indices
+    tear_idx = stat_keys.index("tear_dmg_factor") if "tear_dmg_factor" in stat_keys else -1
+    stop_idx = stat_keys.index("stopping_protection") if "stopping_protection" in stat_keys else -1
+    stop_w = float(priorities.get("stopping_protection", 0.0))
+    has_tear = tear_idx >= 0 and stop_idx >= 0
+
+    # Item IDs for dedup
+    if allow_duplicates:
+        item_id_arr = np.arange(n, dtype=np.int32)
+    else:
+        _id_map = {}
+        item_id_arr = np.zeros(n, dtype=np.int32)
+        for i, opt in enumerate(candidates):
+            if opt.item_id not in _id_map:
+                _id_map[opt.item_id] = len(_id_map)
+            item_id_arr[i] = _id_map[opt.item_id]
+
+    # Min thresholds
+    m_idx_list, m_val_list = [], []
+    for key, val in min_thresholds.items():
+        if key in stat_keys:
+            m_idx_list.append(stat_keys.index(key))
+            m_val_list.append(val)
+    n_m = len(m_idx_list)
+    m_idx_arr = np.array(m_idx_list, dtype=np.int32) if n_m else np.zeros(0, dtype=np.int32)
+    m_val_arr = np.array(m_val_list, dtype=np.float64) if n_m else np.zeros(0, dtype=np.float64)
+
+    # Max thresholds
+    mx_idx_list, mx_val_list = [], []
+    for key, val in (max_thresholds or {}).items():
+        if key in stat_keys:
+            mx_idx_list.append(stat_keys.index(key))
+            mx_val_list.append(val)
+    n_mx = len(mx_idx_list)
+    mx_idx_arr = np.array(mx_idx_list, dtype=np.int32) if n_mx else np.zeros(0, dtype=np.int32)
+    mx_val_arr = np.array(mx_val_list, dtype=np.float64) if n_mx else np.zeros(0, dtype=np.float64)
+
+    # ---- Beam search ----
+
+    # Level 0: single items
+    beam_stats = raw_mx.copy()               # (n, n_stats)
+    beam_wstats = w_mx.copy()
+    beam_prices = prices.copy()
+    beam_counters = is_counter.copy()
+    beam_last_idx = np.arange(n, dtype=np.int32)
+    beam_indices = np.arange(n, dtype=np.int32).reshape(-1, 1)
+    beam_item_ids = item_id_arr.reshape(-1, 1) if not allow_duplicates else None
+
+    # Filter: price <= budget, counter <= max_counter
+    mask = (beam_prices <= budget) & (beam_counters <= max_counter)
+    beam_stats = beam_stats[mask]
+    beam_wstats = beam_wstats[mask]
+    beam_prices = beam_prices[mask]
+    beam_counters = beam_counters[mask]
+    beam_last_idx = beam_last_idx[mask]
+    beam_indices = beam_indices[mask]
+    if beam_item_ids is not None:
+        beam_item_ids = beam_item_ids[mask]
+
+    # Score level 0
+    beam_scores = _score_vec(
+        beam_stats, beam_wstats, beam_prices, min_budget,
+        hp_idx, bul_idx, ehp_w, max_ehp,
+        prot_mult, n_b, b_idx_arr, b_val_arr,
+        tear_idx, stop_idx, stop_w, has_tear,
+        m_idx_arr, m_val_arr, n_m,
+        mx_idx_arr, mx_val_arr, n_mx,
+    )
+
+    # Keep top beam_width
+    (beam_stats, beam_wstats, beam_prices, beam_counters,
+     beam_last_idx, beam_indices, beam_item_ids, beam_scores) = _trim(
+        beam_stats, beam_wstats, beam_prices, beam_counters,
+        beam_last_idx, beam_indices, beam_item_ids, beam_scores, beam_width,
+    )
+
+    # Convert all arrays to GPU (CuPy) when available.
+    # Auto-fallback to CPU for large beam_width to avoid VRAM OOM.
+    _use_gpu = _GPU_OK and cp is not None and beam_width <= 20000
+    xp = cp if _use_gpu else np
+    if xp is cp:
+        raw_mx = cp.asarray(raw_mx)
+        w_mx = cp.asarray(w_mx)
+        prices = cp.asarray(prices)
+        is_counter = cp.asarray(is_counter)
+        beam_stats = cp.asarray(beam_stats)
+        beam_wstats = cp.asarray(beam_wstats)
+        beam_prices = cp.asarray(beam_prices)
+        beam_counters = cp.asarray(beam_counters)
+        beam_last_idx = cp.asarray(beam_last_idx)
+        beam_indices = cp.asarray(beam_indices)
+        beam_scores = cp.asarray(beam_scores)
+        item_id_arr = cp.asarray(item_id_arr)
+        b_idx_arr = cp.asarray(b_idx_arr)
+        b_val_arr = cp.asarray(b_val_arr)
+        m_idx_arr = cp.asarray(m_idx_arr)
+        m_val_arr = cp.asarray(m_val_arr)
+        mx_idx_arr = cp.asarray(mx_idx_arr)
+        mx_val_arr = cp.asarray(mx_val_arr)
+        _DANGER_THRESH_GPU = cp.asarray(_DANGER_THRESH)
+        if beam_item_ids is not None:
+            beam_item_ids = cp.asarray(beam_item_ids)
+        _dthresh = _DANGER_THRESH_GPU
+    else:
+        _dthresh = _DANGER_THRESH
+
+    # Levels 1 to k-1 — fully vectorized with tie-breaking fix
+    for level in range(1, k):
+        B = len(beam_scores)
+        if B == 0:
+            break
+        # Vectorized expansion: compute all B×n combinations at once
+        cand_range = xp.arange(n, dtype=np.int32)
+        if allow_duplicates:
+            order_mask = beam_last_idx[:, None] < cand_range[None, :]
+        else:
+            order_mask = beam_last_idx[:, None] < cand_range[None, :]
+        budget_mask = (beam_prices[:, None] + prices[None, :]) <= budget
+        counter_mask = (beam_counters[:, None] + is_counter[None, :]) <= max_counter
+        if not allow_duplicates:
+            dedup_mask = xp.all(beam_item_ids[:, None, :] != item_id_arr[None, :, None], axis=2)
+            valid = order_mask & budget_mask & counter_mask & dedup_mask
+        else:
+            valid = order_mask & budget_mask & counter_mask
+        if not xp.any(valid):
+            break
+        beam_idx_flat, cand_idx_flat = xp.where(valid)
+        # Tie-breaking fix: sort to match for-loop order (cand outer, beam inner)
+        # so argpartition breaks ties identically to the original for-loop
+        _sort = xp.argsort(cand_idx_flat.astype(xp.float64) * B + beam_idx_flat.astype(xp.float64))
+        beam_idx_flat = beam_idx_flat[_sort]
+        cand_idx_flat = cand_idx_flat[_sort]
+        num_valid = len(beam_idx_flat)
+        new_stats = beam_stats[beam_idx_flat] + raw_mx[cand_idx_flat]
+        new_wstats = beam_wstats[beam_idx_flat] + w_mx[cand_idx_flat]
+        new_prices = beam_prices[beam_idx_flat] + prices[cand_idx_flat]
+        all_scores = _score_vec(
+            new_stats, new_wstats, new_prices, min_budget,
+            hp_idx, bul_idx, ehp_w, max_ehp,
+            prot_mult, n_b, b_idx_arr, b_val_arr,
+            tear_idx, stop_idx, stop_w, has_tear,
+            m_idx_arr, m_val_arr, n_m,
+            mx_idx_arr, mx_val_arr, n_mx,
+        )
+        all_beam_idx = beam_idx_flat.astype(np.int32)
+        all_cand_idx = cand_idx_flat.astype(np.int32)
+        if num_valid > beam_width:
+            top = xp.argpartition(-all_scores, beam_width)[:beam_width]
+            top = top[xp.argsort(-all_scores[top])]
+        else:
+            top = xp.arange(num_valid)
+        sel_beam = all_beam_idx[top]
+        sel_cand = all_cand_idx[top]
+        beam_stats = beam_stats[sel_beam] + raw_mx[sel_cand]
+        beam_wstats = beam_wstats[sel_beam] + w_mx[sel_cand]
+        beam_prices = beam_prices[sel_beam] + prices[sel_cand]
+        beam_counters = beam_counters[sel_beam] + is_counter[sel_cand]
+        beam_last_idx = sel_cand.astype(np.int32)
+        beam_indices = xp.column_stack([beam_indices[sel_beam], sel_cand.astype(np.int32)])
+        if not allow_duplicates:
+            beam_item_ids = xp.column_stack([
+                beam_item_ids[sel_beam],
+                item_id_arr[sel_cand].reshape(-1, 1)
+            ])
+        beam_scores = all_scores[top]
+
+    # ---- Final level: enforce min_thresholds and carryable ----
+    B = len(beam_scores)
+    if B == 0:
+        return np.array([]), np.zeros((0, k), dtype=np.int32)
+
+    # Compute final f/fw (with container bonus + stopping recalc)
+    f = beam_stats.copy()
+    fw = beam_wstats.copy()
+    for b in range(n_b):
+        f[:, b_idx_arr[b]] += b_val_arr[b]
+        fw[:, b_idx_arr[b]] += b_val_arr[b]
+    if has_tear:
+        tear = f[:, tear_idx]
+        existing_stop = f[:, stop_idx]
+        tear_safe = xp.where(xp.abs(100 + tear) < 1e-10, 1e-10, tear)
+        new_stop = (1 - 100 / (100 + tear_safe) * (1 - existing_stop / 100)) * 100
+        f[:, stop_idx] = new_stop
+        fw[:, stop_idx] = new_stop * stop_w
+    # Min thresholds
+    valid = xp.ones(B, dtype=bool)
+    for m in range(n_m):
+        valid &= f[:, m_idx_arr[m]] >= m_val_arr[m]
+    # Carryable check: protection on RAW accumulation, then container bonus
+    danger = beam_stats[:, :5].copy()  # raw, no container bonus
+    for d in range(4):
+        danger[:, d] = xp.where(danger[:, d] > 0, danger[:, d] * prot_mult, danger[:, d])
+    for b in range(n_b):
+        if b_idx_arr[b] < 5:
+            danger[:, b_idx_arr[b]] += b_val_arr[b]
+    carry = xp.ones(B, dtype=bool)
+    for d in range(5):
+        carry &= danger[:, d] <= _dthresh[d] + 0.001
+    if require_carry:
+        valid &= carry
+    # Final scores
+    if min_budget:
+        final_scores = -beam_prices.copy()
+    else:
+        final_scores = xp.zeros(B)
+        if hp_idx >= 0 and bul_idx >= 0 and ehp_w > 0:
+            eg = (1 + f[:, hp_idx] / 100) * (100 + f[:, bul_idx]) - 100
+            if max_ehp > 0:
+                final_scores += (eg / max_ehp) * ehp_w
+        final_scores += xp.sum(fw, axis=1)
+        if hp_idx >= 0:
+            final_scores -= xp.where(f[:, hp_idx] <= 0, ehp_w * 0.5, 0)
+        if bul_idx >= 0:
+            final_scores -= xp.where(f[:, bul_idx] <= 0, ehp_w * 0.5, 0)
+    for d in range(5):
+        v = danger[:, d]
+        exceeding = v > _dthresh[d] + 0.001
+        final_scores -= xp.where(exceeding, (v - _dthresh[d]) * 1000, 0)
+        soft = (v > 0) & ~exceeding
+        final_scores -= xp.where(soft, (v / _dthresh[d]) * 0.15, 0)
+    valid_scores = final_scores[valid]
+    valid_indices = beam_indices[valid]
+    if len(valid_scores) == 0:
+        return np.array([]), np.zeros((0, k), dtype=np.int32)
+    n_results = min(len(valid_scores), n_keep)
+    top = xp.argpartition(-valid_scores, n_results - 1)[:n_results]
+    top = top[xp.argsort(-valid_scores[top])]
+
+    # Convert CuPy arrays back to NumPy for the caller
+    if _GPU_OK and cp is not None:
+        return cp.asnumpy(valid_scores[top]), cp.asnumpy(valid_indices[top])
+    return valid_scores[top], valid_indices[top]

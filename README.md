@@ -1,0 +1,77 @@
+# Stalzone Artifact Build Optimizer
+
+Оптимизатор сборок артефактов для STALCRAFT / Stalzone (регион EU).
+Подбирает 4–7 артефактов под бюджет, контейнер, броню, приоритеты и пороги статов,
+считает носибельность, EHP и лечение, умеет экспортировать сборки в lunar-zone.
+
+## Стек
+
+- Python 3.12, FastAPI, Uvicorn
+- SQLite (WAL), NumPy, Numba, SciPy/HiGHS
+- Один HTML-файл интерфейса: `app/templates/index.html`
+
+## Быстрый старт
+
+```bat
+start.bat
+```
+
+Скрипт сам переходит в свою папку, проверяет Python 3.12 и зависимости,
+инициализирует БД и поднимает сервер на <http://127.0.0.1:8123>.
+
+Ручной запуск:
+
+```bat
+py -3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8123
+```
+
+Ключи Stalzone eAPI задаются в `.env` (см. `.env.example`). Поддерживаются
+несколько пар ключей `STALCRAFT_CLIENT_ID_N` / `STALCRAFT_CLIENT_SECRET_N`
+для параллельного сбора аукциона.
+
+## Данные
+
+- `data/stalzone.db` — артефакты, контейнеры, броня, активные лоты и история продаж.
+- Обновление аукциона: `POST /api/refresh-auction`, прогресс — `GET /api/refresh-status`.
+- Тот же сбор идёт автоматически в фоне, если данные старше 6 часов.
+- Вместе с активными лотами собирается история продаж (`/api/price-history`).
+  Повторный сбор не создаёт дублей; на предмет хранится последнее окно (500 записей).
+- CLI: `py -3.12 -m app.collector --auction` (добавьте `--no-history`, чтобы пропустить историю).
+
+## Тесты
+
+```bat
+py -3.12 -m pytest
+```
+
+`pytest.ini` ограничивает сбор папкой `tests`; запуск из корня безопасен.
+Отдельные наборы:
+
+```bat
+py -3.12 -m pytest tests/test_objective.py tests/test_physical_items.py -q
+py -3.12 -m pytest tests/test_max_quality.py tests/test_survivability.py -q
+```
+
+## Важно про документацию
+
+Актуальная математика и пороги — в коде (`app/builder.py`, `app/_numba_search.py`,
+`app/_survivability*.py`), а не в старых промптах. В `SYSTEM_PROMPT.md` и
+`REBOOT_PROMPT.md` сохранились устаревшие значения (например, старые пороги
+носибельности и защита frost контейнером). Корневые `*_202610*.md` — это журнал
+quality-gate проверок, а не описание текущего состояния.
+
+## Статус подсистем
+
+- Основной поиск: Beam (большие пулы) и Numba C(n,k) (малые пулы); глобальный
+  оптимум не гарантируется.
+- `max_quality` (MILP, HiGHS): включается файлом `app/_max_quality_release.json`;
+  статус `OPTIMAL` относится только к подготовленному пулу.
+- Survivability: production-код соответствует V2.6. Более поздняя V3.0 лежит в
+  `data/validation/` со статусом research-only / NO-GO и в рабочее дерево не перенесена.
+
+## Git
+
+Файл `.git` в этой копии — указатель на отсутствующий worktree
+(`C:/myprofrma/stalzonesborka/.git/worktrees/stalzonesborka-agent`), поэтому
+git-команды здесь не работают. Перед правками делайте резервную копию или
+переинициализируйте репозиторий.

@@ -1,0 +1,306 @@
+
+========================= load_artifact_options =========================
+
+def load_artifact_options(priorities: dict | None = None,
+                          max_price: int | None = None,
+                          region: str | None = None,
+                          conservative: bool = False) -> list[ArtifactOption]:
+    """Load artifact options from active auction lots — single JOIN query, no N+1.
+
+    Per REBOOT_PROMPT v2.0:
+    - art_percent = MAX of quality tier (115 for qlt=1, 130 for qlt=2, ...).
+    - ptn>0 with bonus_properties → use the lot's actual bonuses.
+    - ptn=0 → base stats only, no bonus simulation (don't fake research).
+    - Smart bonus-combo filter: only combos containing priority stats, max 5 per lot.
+    - Score: _score_option only — no counter-art bonus.
+    """
+    priorities = priorities or {}
+    region = region or Config.REGION
+    options: list[ArtifactOption] = []
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT a.id, a.name_ru, a.name_en, a.subcategory, a.stats, a.bonus_stats, a.icon_url,
+                   l.quality, l.ptn, l.buyout_price as min_price,
+                   l.bonus_properties, l.art_percent, l.stats_random
+            FROM artefacts a
+            LEFT JOIN (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY item_id, quality, ptn, bonus_properties
+                    ORDER BY buyout_price ASC
+                ) as rn
+                FROM auction_lots WHERE region=? AND buyout_price > 0
+            ) l ON l.item_id = a.id AND l.rn <= 7
+            ORDER BY a.id, l.buyout_price ASC
+        """, (region,)).fetchall()
+
+        # Load historical avg prices per (item_id, quality) — at least 3 sales for reliability
+        hist_rows = conn.execute("""
+            SELECT item_id, quality, AVG(price) as avg_price, COUNT(*) as cnt
+            FROM auction_history
+            WHERE region=? AND price > 0
+            GROUP BY item_id, quality
+            HAVING cnt >= 3
+        """, (region,)).fetchall()
+        _hist_avg: dict[tuple[str, int], float] = {}
+        _hist_by_item: dict[str, dict[int, float]] = {}
+        for hr in hist_rows:
+            _hist_avg[(hr["item_id"], hr["quality"])] = hr["avg_price"]
+            _hist_by_item.setdefault(hr["item_id"], {})[hr["quality"]] = hr["avg_price"]
+        # Fallback: for qualities without history, use nearest lower quality
+        for item_id, qmap in _hist_by_item.items():
+            for q in range(6):
+                if (item_id, q) not in _hist_avg:
+                    # Find nearest lower quality with data
+                    for q_lo in range(q - 1, -1, -1):
+                        if q_lo in qmap:
+                            # Extrapolate: higher quality ≈ 2× lower quality
+                            _hist_avg[(item_id, q)] = qmap[q_lo] * (2.0 ** (q - q_lo))
+                            break
+    # Priority prop_ids (upper) for bonus combo filtering
+    prio_props = {_normalize_bonus_id(p.upper()) for p in priorities.keys()}
+
+    for art_id, group in _it.groupby(rows, key=lambda r: r["id"]):
+        group_list = list(group)
+        art = group_list[0]
+        if not art["stats"]:
+            continue
+        base_stats = json.loads(art["stats"])
+        bonus_stats = json.loads(art["bonus_stats"]) if art["bonus_stats"] else []
+        # Exclude non-artifact items (Рубик, Регалий)
+        if art["id"] in EXCLUDED_ARTIFACTS:
+            continue
+
+        for lot in group_list:
+            if lot["min_price"] is None:
+                continue
+            price = lot["min_price"]
+            if max_price and price > max_price:
+                continue
+            quality = lot["quality"] or 0
+            ptn = lot["ptn"] or 0
+            # Price fairness: only filter UNRESEARCHED lots (ptn=0).
+            # Researched lots (ptn>0) are rare, have bonuses, and are legitimately
+            # more expensive — don't filter them against ptn=0 averages.
+            if ptn == 0:
+                _hkey = (art["id"], quality)
+                _hist = _hist_avg.get(_hkey, 0)
+                if _hist > 0 and price > _hist * 2.0:
+                    log.debug("Skip overpriced: %s q=%d ptn=0 price=%d avg=%.0f",
+                             art["name_ru"], quality, price, _hist)
+                    continue
+            qr = QUALITY_RANGES.get(quality, QUALITY_RANGES[0])
+            if conservative:
+                art_percent = qr["min"]
+            elif lot["art_percent"]:
+                art_percent = lot["art_percent"]  # base from calc_art_percent(stats_random); ptn applied in _calc_stat_value via calc_ptn_bonus
+            else:
+                art_percent = qr["min"] + qr["range"]
+
+            # Determine which bonus combos to generate
+            if ptn > 0 and lot["bonus_properties"]:
+                lot_bonus_raw = lot["bonus_properties"] if lot["bonus_properties"] else "[]"
+                try:
+                    lot_bonuses = json.loads(lot_bonus_raw) if isinstance(lot_bonus_raw, str) else lot_bonus_raw
+                except (json.JSONDecodeError, TypeError):
+                    lot_bonuses = []
+                bonus_combos = [lot_bonuses] if lot_bonuses else [[]]
+            elif ptn > 0 and bonus_stats:
+                available_bonuses = [s for s in bonus_stats if s.get("unlock_ptn", 0) <= ptn]
+                all_bonus_props = [s.get("prop_id", "") for s in available_bonuses]
+                bonus_combos = []
+                for r in range(1, min(len(all_bonus_props), 3) + 1):
+                    for c in _it.combinations(all_bonus_props, r):
+                        combo_set = set(c)
+                        has_prio = bool(combo_set & prio_props)
+                        has_counter = any(
+                            p.endswith("_accumulation") or p.endswith("_protection")
+                            for p in combo_set
+                        )
+                        if has_prio or has_counter or not prio_props:
+                            bonus_combos.append(list(c))
+                if not bonus_combos:
+                    bonus_combos = [[]]
+                bonus_combos = bonus_combos[:10]
+            else:
+                # ptn=0: no bonuses (unresearched). Base stats only.
+                bonus_combos = [[]]
+
+            for combo in bonus_combos:
+                norm_ids = [_normalize_bonus_id(b.upper()) for b in combo]
+                stats_container, stats_raw, stats_names, _ = compute_artifact_stats(
+                    base_stats, bonus_stats, norm_ids,
+                    art_percent, ptn, qr["min"], qr["range"],
+                    lot["stats_random"] if lot["stats_random"] is not None else None,
+                )
+                opt = ArtifactOption(
+                    item_id=art["id"], name_ru=art["name_ru"], name_en=art["name_en"],
+                    subcategory=art["subcategory"], quality=quality,
+                    quality_name=QUALITY_NAMES.get(quality, "?"),
+                    art_percent=art_percent, buyout_price=price, ptn=ptn,
+                    stats=stats_container, stats_raw=stats_raw, stats_names=stats_names,
+                    unlocked_bonus_ids=combo, icon_url=art["icon_url"],
+                    base_stats=base_stats, bonus_stats=bonus_stats,
+                    hist_avg_price=_hist,
+                )
+                opt.score = _score_option(stats_container, priorities)
+                options.append(opt)
+
+    options.sort(key=lambda o: o.score, reverse=True)
+    log.info("Loaded %d artifact options from %d base artefacts", len(options), len(rows))
+    return options
+
+
+========================= load_container_options =========================
+
+def load_container_options(region: str | None = None) -> list[ContainerOption]:
+    region = region or Config.REGION
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, name_ru, name_en, item_type, slots, base_price, "
+            "inner_protection, effectiveness, bonus_stats, icon_url "
+            "FROM containers ORDER BY slots DESC"
+        ).fetchall()
+        options = []
+        for c in rows:
+            lot = conn.execute(
+                "SELECT MIN(buyout_price) as min_price FROM auction_lots "
+                "WHERE item_id=? AND region=? AND buyout_price > 0",
+                (c["id"], region),
+            ).fetchone()
+            price = lot["min_price"] if lot and lot["min_price"] else 0
+            try:
+                bonus = json.loads(c["bonus_stats"]) if c["bonus_stats"] else {}
+            except (json.JSONDecodeError, TypeError):
+                bonus = {}
+            options.append(ContainerOption(
+                item_id=c["id"], name_ru=c["name_ru"], name_en=c["name_en"] if "name_en" in c.keys() else "",
+                item_type=c["item_type"], slots=c["slots"], buyout_price=price,
+                inner_protection=c["inner_protection"] if "inner_protection" in c.keys() else 0.0,
+                effectiveness=c["effectiveness"] if "effectiveness" in c.keys() else 0.0,
+                bonus_stats=bonus, icon_url=c["icon_url"],
+            ))
+    return options
+
+
+========================= compute_artifact_stats =========================
+
+def compute_artifact_stats(base_stats: list, bonus_stats: list, bonus_unlocked_ids: list,
+                           art_percent: float, ptn: int, qlt_min: float, qlt_range: float,
+                           stats_random: float | None,
+                           inner_protection: float = 0.0, effectiveness: float = 100.0,
+                           other_acc: dict | None = None
+                           ) -> tuple[dict, dict, dict, float | None]:
+    """Compute all stats for one artifact. Container protection is deferred to build level.
+
+    Pipeline (mirrors JS calc_stat only):
+      1. _calc_stat_value: raw value with n() swap, ptn_mult for is_positive=true only,
+         effectiveness applied in n() for non-accumulation stats.
+      2. (container protection deferred to _process_combo)
+      3. (stopping_protection recalc deferred to _process_combo)
+
+    ptn=0 (unresearched): only base stats. No bonus simulation.
+    ptn>0: unlock bonuses at ptn>=5 → [0], ptn>=10 → [0,1], ptn>=15 → [0,1,2].
+    For auction lots with bonus_properties, use those directly.
+
+    Returns (stats_container, stats_raw, stats_names, recommended_percent).
+    stats_container == stats_raw (protection deferred). recommended_percent always None.
+    """
+    _ = (inner_protection, other_acc, qlt_range, stats_random)  # unused, kept for API compat
+    # Rarity from qlt_min (the lot's actual quality tier, not derived from art_percent).
+    # Common (qlt_min=85): rarity.ordinary — avoids d=100 special case for Common artifacts.
+    # Uncommon+ (qlt_min>=100): correct rarity for step-interpolation boundaries.
+    # FIX: at d=145 Rare (qlt_min=130), step gives max_v (step end, i=1.0),
+    # not 0.85×max_v (n_steps fallback gives step start of Exceptional, i=0).
+    # Previous code hardcoded rarity.ordinary for ALL tiers — wrong at boundaries ≥115.
+    _QLT_MIN_TO_RARITY = {
+        100: "rarity.unordinary", 115: "rarity.special", 130: "rarity.rare",
+        145: "rarity.exclusive", 160: "rarity.legendary",
+    }
+    rarity = _QLT_MIN_TO_RARITY.get(int(qlt_min), "rarity.ordinary") if qlt_min and qlt_min >= 100 else "rarity.ordinary"
+    stats_raw: dict[str, float] = {}
+    stats_names: dict[str, str] = {}
+
+    unlocked_set = {_normalize_bonus_id(b.upper()) for b in (bonus_unlocked_ids or [])}
+
+    def _process_stat_list(stats_list, is_bonus=False):
+        for s in stats_list:
+            prop_id = s.get("prop_id", "")
+            if is_bonus:
+                # Bonus only counts if it's in the unlocked set
+                bonus_id = _normalize_bonus_id(prop_id.upper())
+                if bonus_id not in unlocked_set:
+                    continue
+            raw_val = _calc_stat_value(s, art_percent, ptn, rarity, effectiveness)
+            stats_raw[prop_id] = stats_raw.get(prop_id, 0.0) + raw_val
+            stats_names[prop_id] = s.get("name_ru", prop_id)
+
+    _process_stat_list(base_stats, is_bonus=False)
+    _process_stat_list(bonus_stats, is_bonus=True)
+
+    return dict(stats_raw), dict(stats_raw), stats_names, None
+
+
+========================= _apply_build_container_protection =========================
+
+def _apply_build_container_protection(stats: dict, stat_origins: dict,
+                                      inner_protection: float) -> dict:
+    """Apply container protection at BUILD level after summation (JS counterStatsByContainer).
+
+    Applies (1-prot/100) ONLY to:
+      is_positive=false AND statsContCanProtect AND origin=artefact AND !armorStat
+    """
+    result = {}
+    for prop_id, val in stats.items():
+        full_key = _to_full_key(prop_id)
+        is_pos = _recompute_is_positive(full_key, val)
+        if (not is_pos
+                and _can_protect(full_key)
+                and stat_origins.get(prop_id, "artefact") == "artefact"):
+            result[prop_id] = val * (1.0 - inner_protection / 100.0)
+        else:
+            result[prop_id] = val
+    return result
+
+
+========================= ArtifactOption =========================
+
+@dataclass
+class ArtifactOption:
+    item_id: str
+    name_ru: str
+    name_en: str
+    subcategory: str
+    quality: int
+    quality_name: str
+    art_percent: float
+    buyout_price: int
+    ptn: int
+    stats: dict
+    stats_raw: dict
+    stats_names: dict
+    unlocked_bonus_ids: list
+    icon_url: str = ""
+    base_stats: list = field(default_factory=list)
+    bonus_stats: list = field(default_factory=list)
+    stats_random: float | None = None
+    recommended_percent: float | None = None
+    is_owned: bool = False
+    hist_avg_price: float = 0.0  # historical avg sold price for (item_id, quality)
+    score: float = 0.0
+
+
+========================= ContainerOption =========================
+
+@dataclass
+class ContainerOption:
+    item_id: str
+    name_ru: str
+    name_en: str
+    item_type: str
+    slots: int
+    buyout_price: int
+    inner_protection: float = 0.0
+    effectiveness: float = 0.0
+    bonus_stats: dict = field(default_factory=dict)
+    icon_url: str = ""
