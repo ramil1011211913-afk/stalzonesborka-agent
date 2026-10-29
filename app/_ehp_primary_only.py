@@ -58,11 +58,20 @@ def solve(model,output,*,solver=None):
     from scipy.optimize import milp,Bounds,LinearConstraint
     from scipy.sparse import coo_matrix
     from ._max_quality_worker import _finite_number,_stop_reason
-    from ._survivability_native import witness,Evaluator
+    from ._survivability_native import witness,Evaluator,NativeUnavailable
     from ._survivability_portfolio import native
     validate_request(model.get('primary_only'),model.get('time_policy')=='deep_remaining',True,dict(zip(model['objective_keys'],model['objective_coefficients'])))
     if not model.get('primary_only'):raise ValueError('Explicit primary_only required')
     real=solver or milp;deadline=model.get('deadline',time.monotonic()+model['seconds'])
+    compatible=False;use_support=False
+    try:
+        import scipy
+        from scipy.optimize._highspy import _core as h
+        compatible=scipy.__version__=='1.18.1' and (h.HIGHS_VERSION_MAJOR,h.HIGHS_VERSION_MINOR,h.HIGHS_VERSION_PATCH)==(1,12,0)
+        if solver is None and compatible and deadline-time.monotonic()>4:
+            from ._ehp_support_seed import eligible
+            use_support=eligible(model)
+    except (ImportError,AttributeError):pass
     state=dict(stages=[],optimal=False,infeasible=False,priority_optimality_proven=False,cost_optimality_proven=False,
                primary_only=True,optimization_contract=CONTRACT,cost_optimization_requested=False,
                pool_sha256=model['pool_sha256'],market_generation=model.get('market_generation'),process_id=os.getpid(),
@@ -117,14 +126,17 @@ def solve(model,output,*,solver=None):
         save();return nodes
     # A bounded proxy is ONLY a witness source, never a substitute EHP objective.
     available=deadline-time.monotonic();seed_cap=min(1000,model['node_limit']);charge=0
-    if available>.2:
+    def proxy_seed():
+        available=deadline-time.monotonic();seed_cap=min(1000,model['node_limit']-charge)
+        if available<=.2 or seed_cap<=0:return 0
         start=time.monotonic();base=model['rows'][:1+model['base_rows']]
         seed_model=dict(model,rows=base,variables=model['n'],variable_lower=[0.]*model['n'],variable_upper=[1.]*model['n'],integrality=[1]*model['n'])
         skw=matrix(seed_model);kwargs=dict(skw,options=dict(time_limit=min(3.,available*.05),node_limit=seed_cap,mip_rel_gap=0.))
         r=real(-np.array([s.get('bullet_dmg_factor',0.) for s in model['metric_inputs']]),**kwargs)
         # Complete auxiliary variables in the ORIGINAL model before publication.
-        charge=accept(model,r,'primary_seed',original,time.monotonic()-start,seed_cap)
-        charge=seed_cap if charge is None else min(model['node_limit'],charge)
+        used=accept(model,r,'primary_seed',original,time.monotonic()-start,seed_cap)
+        return seed_cap if used is None else min(seed_cap,used)
+    if not use_support:charge=proxy_seed()
     state['primary_seed_node_charge']=charge;save()
     tight=model
     try:
@@ -136,16 +148,47 @@ def solve(model,output,*,solver=None):
             tight=transform(model,min(deadline-.1,time.monotonic()+5.))
             assert tight['goals']==model['goals'] and tight['integrality']==model['integrality'] and tight['metric_vars']==model['metric_vars']
             state['lp_bounds']=dict(applied=bool(tight['bound_proofs']),seconds=tight['bound_seconds'],certificates=tight['bound_proofs'])
+            state['lp_bounds']['canonical_rows']=len(tight.get('symmetry_rows',[]))
         else:state['lp_bounds']=dict(applied=False,reason='solver_version_or_remaining_time')
     except (ValueError,AssertionError,AttributeError,ImportError) as e:
         tight=model;state['lp_bounds']=dict(applied=False,reason=type(e).__name__)
+    # Reuse existing acceptance/witness checks and seed node accounting.
+    if use_support and deadline-time.monotonic()>2 and model['node_limit']-charge>0:
+        try:
+            from ._ehp_support_seed import propose
+            start=time.monotonic();cap_seed=min(3000,model['node_limit']-charge)
+            result,info=propose(tight,min(8.,(deadline-time.monotonic()-1.)*.5),cap_seed)
+            state['support_seed']=info
+            if result is not None:
+                used=accept(model,result,'primary_seed',original,time.monotonic()-start,cap_seed)
+                state['stages'][-1]['seed_strategy']='linear_ehp_support'
+                charge+=cap_seed if used is None else min(cap_seed,used)
+                state['primary_seed_node_charge']=charge
+        except (ValueError,AssertionError,AttributeError,ImportError,NativeUnavailable) as error:
+            state['support_seed']=dict(applied=False,reason=type(error).__name__)
+        except RuntimeError as error:
+            if 'std::bad_alloc' in str(error):raise MemoryError('std::bad_alloc') from error
+            state['support_seed']=dict(applied=False,reason='RuntimeError')
+            charge+=cap_seed;state['primary_seed_node_charge']=charge
+        if not any(s.get('independent_witness_valid') for s in state['stages']):
+            charge+=proxy_seed();state['primary_seed_node_charge']=charge
     save();remaining=deadline-time.monotonic()-1.;cap=model['node_limit']-charge
     if remaining<=0 or cap<=0:return state
     state['primary_solver_allowance_seconds']=remaining
     kwargs=matrix(tight);cost=np.zeros(tight['variables'])
     for j,v in tight['goals'][0]:cost[j]=-v
     start=time.monotonic()
-    try:r=real(cost,**kwargs,options=dict(time_limit=remaining,node_limit=cap,mip_rel_gap=0.))
+    try:
+        options=dict(time_limit=remaining,node_limit=cap,mip_rel_gap=0.)
+        known=[s for s in state['stages'] if s.get('independent_witness_valid') and s.get('seed_strategy')=='linear_ehp_support']
+        if solver is None and compatible and known:
+            from ._survivability_native import native_solve,NativeUnavailable
+            best=max(known,key=lambda s:s['actual_primary']);point,proof=witness(tight,best['indices'],kwargs)
+            if not proof['exact_violations']:
+                try:r=native_solve(cost,dict(kwargs,options=options),start=point)
+                except NativeUnavailable:r=real(cost,**kwargs,options=options)
+            else:r=real(cost,**kwargs,options=options)
+        else:r=real(cost,**kwargs,options=options)
     except RuntimeError as e:
         if 'std::bad_alloc' in str(e):raise MemoryError('std::bad_alloc') from e
         raise

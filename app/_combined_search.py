@@ -43,6 +43,8 @@ def build_combined_sets(budget, *, beam_width=2000, expansion_chunk_size=262144,
                         ('joint_tail_limit', joint_tail_limit)]:
         positive_integer(value, name)
     def search(*args, **kwargs):
+        # The combined engine sets its own mode-specific bound policy.
+        kwargs.pop('constraint_lookahead', None)
         kwargs.update(beam_width=beam_width, expansion_chunk_size=expansion_chunk_size,
                       joint_tail_limit=joint_tail_limit)
         return search_combined(*args, **kwargs)

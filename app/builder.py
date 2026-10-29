@@ -576,69 +576,50 @@ def _artifact_danger_bounds(option, container):
 
 
 def analyze_build_carryability(build) -> dict:
-    """Analyze carryability at min (0.85xraw) and max (1.0xraw) art% of rarity band.
+    """Report the existing per-artifact endpoint envelope in every search mode.
 
-    Uses combined_stats dangers and scales to band endpoints.
-    In conservative mode: current = 0.85xraw, so max = current / 0.85.
-    Finds art% threshold where each danger hits its carryability limit.
+    Sum the lower/upper danger endpoints, then apply container protection,
+    container bonuses and fixed armor exactly as in guaranteed search.
+    These are endpoint envelopes, not a single shared artifact percentage.
     """
-    QLTY_RANGES = {0: (85, 100), 1: (100, 115), 2: (115, 130),
-                   3: (130, 145), 4: (145, 160), 5: (160, 175)}
-    prot_mult = 0.0
-    if build.container:
-        prot_mult = 1.0 - build.container.inner_protection / 100.0
-
     analysis = {}
     all_carryable_max = True
     armor = getattr(build, "_armor", None) or getattr(build.container, "_armor", None)
-    endpoints = None
-    if armor or getattr(build, "_guaranteed_search", False) or getattr(build.container, "_guaranteed_search", False):
-        base = getattr(build.container, "_base_container", build.container)
-        low, high = {}, {}
-        for option in build.artifacts:
-            values = _artifact_danger_bounds(option, base)
-            for full_key in DANGER_THRESHOLDS:
-                key = full_key.replace("stalker.artefact_properties.factor.", "")
-                low[key] = low.get(key, 0) + values[0].get(key, 0)
-                high[key] = high.get(key, 0) + values[1].get(key, 0)
-        origins = {key: "artefact" for key in low}
-        endpoints = [_apply_build_container_protection(row, origins, base.inner_protection if base else 0)
-                     for row in (low, high)]
-        for row in endpoints:
-            for key, value in (base.bonus_stats if base else {}).items():
-                row[key] = row.get(key, 0) + (value.get("value", 0) if isinstance(value, dict) else value)
-            for key, value in _armor_additions(armor).items():
-                row[key] = row.get(key, 0) + value
+    base = getattr(build.container, "_base_container", build.container)
+    low, high = {}, {}
+    for option in build.artifacts:
+        values = _artifact_danger_bounds(option, base)
+        for full_key in DANGER_THRESHOLDS:
+            key = full_key.replace("stalker.artefact_properties.factor.", "")
+            low[key] = low.get(key, 0) + values[0].get(key, 0)
+            high[key] = high.get(key, 0) + values[1].get(key, 0)
+    origins = {key: "artefact" for key in low}
+    endpoints = [_apply_build_container_protection(row, origins, base.inner_protection if base else 0)
+                 for row in (low, high)]
+    for row in endpoints:
+        for key, value in (base.bonus_stats if base else {}).items():
+            row[key] = row.get(key, 0) + (value.get("value", 0) if isinstance(value, dict) else value)
+        for key, value in _armor_additions(armor).items():
+            row[key] = row.get(key, 0) + value
 
     for stat_key_full, threshold in DANGER_THRESHOLDS.items():
         short_key = stat_key_full.replace("stalker.artefact_properties.factor.", "")
         val = build.combined_stats.get(short_key, 0)
-        if val <= 0 and (endpoints is None or endpoints[1].get(short_key, 0) <= 0):
+        if val <= 0 and endpoints[1].get(short_key, 0) <= 0:
             continue
 
         is_frost = short_key == "frost_accumulation"
-        danger_min = val
-        danger_max = val / 0.85
-        if endpoints is not None:
-            danger_min = endpoints[0].get(short_key, 0)
-            danger_max = max(val, endpoints[1].get(short_key, 0))
+        danger_min = endpoints[0].get(short_key, 0)
+        danger_max = max(val, endpoints[1].get(short_key, 0))
 
         carryable_min = danger_min <= threshold
         carryable_max = danger_max <= threshold
         if not carryable_max:
             all_carryable_max = False
 
+        # Separate artifact percentages/counter-effects have no defined single
+        # inverse here. Keep the nullable field instead of fabricating a cutoff.
         art_pct_threshold = None
-        if not carryable_max and carryable_min:
-            factor = threshold * 0.85 / val
-            if 0.85 <= factor < 1.0:
-                q_min, q_max = 100, 115
-                for art in build.artifacts:
-                    if short_key in art.stats and art.stats[short_key] > 0:
-                        q_min, q_max = QLTY_RANGES.get(art.quality, (100, 115))
-                        break
-                art_pct_threshold = round(
-                    q_min + (factor - 0.85) / 0.15 * (q_max - q_min), 1)
 
         name_ru = build.combined_stats_names.get(short_key, short_key)
         analysis[short_key] = {
@@ -995,16 +976,18 @@ def _final_valid(build, budget, minimum, maximum, carry, guaranteed, duplicates)
 
 
 def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry,
-                     guaranteed, duplicates, priorities, objective, region, request, primary_pool=()):
-    """Rescue only an empty ordinary result; leave all search engines untouched."""
+                     guaranteed, duplicates, priorities, objective, region, request, primary_pool=(),
+                     refine_lexicographic=False):
+    """Verify ordinary hits, preserve/refine their incumbent, or rescue an empty result."""
     from . import _feasibility_fallback as rescue
+    from ._quality_scenario import current_views
     started = time.monotonic()
     models = []
     # Recheck real auction descriptors, including expiry, even for primary hits.
     # Anonymous programmatic fixtures retain their previous non-market contract.
     def available(builds):
         real = [o for build in builds for o in build.artifacts if o.auction_lot_id is not None]
-        valid = {id(o) for o in rescue.current_candidates(real, get_connection, region, _normalize_bonus_id)}
+        valid = {id(o) for o in current_views(real, get_connection, region, _normalize_bonus_id)}
         return [build for build in builds if all(o.auction_lot_id is None or id(o) in valid for o in build.artifacts)]
 
     if result or primary_pool:
@@ -1014,10 +997,49 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
                 result = available(primary_pool)
                 result.sort(key=objective.sort_key)
                 result = result[:max(1, request['top_n'])]
+            elif result and primary_pool:
+                # Diversity was selected before market validation. An expired
+                # anchor must not hide a stronger valid build already found.
+                incumbent = min(result, key=objective.sort_key)
+                better = [b for b in primary_pool
+                          if objective.sort_key(b) < objective.sort_key(incumbent)]
+                verified = available(better)
+                if verified:
+                    best = min(verified, key=objective.sort_key)
+                    result = [best] + [b for b in result if b is not best]
+                    result = result[:max(1, request['top_n'])]
         except Exception:
             return rescue.SearchResults([], [dict(state='UNKNOWN', reason='market_validation_error')], complete=False)
         if result:
-            wrapped = rescue.SearchResults(result)
+            if refine_lexicographic and objective.mode == 'lexicographic' and not (guaranteed or request.get('conservative')):
+                from ._beam_refine import refine_incumbent
+                try:
+                    best = refine_incumbent(profiles, min(result, key=objective.sort_key),
+                        budget, minimum, maximum, carry, duplicates, priorities, objective, region, request)
+                    if best is not None:
+                        result = [best] + [b for b in result if b is not best]
+                        result = result[:max(1, request['top_n'])]
+                except Exception:
+                    # A secondary strategy must never discard the verified
+                    # primary incumbent, including on allocation/solver errors.
+                    log.exception('Secondary Beam refinement failed; retaining verified incumbent')
+            refinement_models = []
+            if refine_lexicographic and not (guaranteed or request.get('conservative')):
+                from ._ordinary_refine import refine_incumbent as refine_linear
+                try:
+                    best, refinement_models = refine_linear(profiles, min(result, key=objective.sort_key),
+                        budget, minimum, maximum, carry, duplicates, priorities, objective, region, request)
+                    if best is not None:
+                        result = [best] + [b for b in result if b is not best]
+                except Exception:
+                    log.exception('Linear refinement failed; retaining verified incumbent')
+            if refinement_models:
+                try:
+                    result = available(result)
+                except Exception:
+                    return rescue.SearchResults([], [dict(state='UNKNOWN', reason='market_validation_error')], complete=False)
+            result = result[:max(1, request['top_n'])]
+            wrapped = rescue.SearchResults(result, refinement_models)
             wrapped.search_status['availability_verified'] = all(
                 o.is_owned or o.auction_lot_id is not None for build in result for o in build.artifacts)
             return wrapped
@@ -1323,9 +1345,7 @@ def load_artifact_options(priorities: dict | None = None,
                              art["name_ru"], quality, price, _hist)
                     continue
             qr = QUALITY_RANGES.get(quality, QUALITY_RANGES[0])
-            if conservative:
-                art_percent = qr["min"]
-            elif lot["art_percent"]:
+            if lot["art_percent"]:
                 art_percent = lot["art_percent"]  # base from calc_art_percent(stats_random); ptn applied in _calc_stat_value via calc_ptn_bonus
             else:
                 art_percent = qr["min"] + qr["range"]
@@ -1383,6 +1403,9 @@ def load_artifact_options(priorities: dict | None = None,
                 opt.score = _score_option(stats_container, priorities)
                 options.append(opt)
 
+    if conservative:
+        from ._quality_scenario import minimum_views
+        options = minimum_views(options, priorities)
     options.sort(key=lambda o: o.score, reverse=True)
     log.info("Loaded %d artifact options from %d base artefacts", len(options), len(rows))
     return options
@@ -1785,6 +1808,9 @@ def build_artifact_sets(
         # Each unique (item_id, ptn, quality, bonus combo) is a separate candidate.
         # This ensures cheap variants with slightly lower stats survive alongside
         # expensive ones — the search picks the best price/performance ratio.
+        # Threshold searches have candidate-count based widening/multi-pass
+        # policies. Keep their pool unchanged until those policies are budgeted.
+        _profile_pool = not (min_budget or min_thresholds or max_thresholds)
         seen_ids: dict[str, list[ArtifactOption]] = {}
         for o in pool:
             if o.item_id not in seen_ids:
@@ -1792,15 +1818,22 @@ def build_artifact_sets(
             seen_ids[o.item_id].append(o)
         pool = []
         for item_id, variants in seen_ids.items():
-            # Cap per (item_id, quality, ptn) — keep max 2 cheapest.
-            # Same item+quality+ptn has same base stats; 5+ price variants
-            # waste candidate slots that should go to different artifacts.
+            # Budget/threshold searches retain their grouping. Other searches cap
+            # only identical full profiles, so useful bonuses/percentages survive
+            # while equivalent offers do not crowd out other Beam prefixes.
             _seen_qptn: dict[tuple, list] = {}
             for v in sorted(variants, key=lambda o: -o.score):
-                _qkey = (v.quality, v.ptn)
+                # Distinct percentages/bonuses are distinct search choices.
+                # Only exactly equivalent calculation profiles share a cap.
+                _qkey = ((v.quality, v.ptn) if not _profile_pool else (
+                    v.quality, v.ptn, float(v.art_percent).hex(), v.stats_random,
+                    tuple(sorted(_normalize_bonus_id(x.upper()) for x in v.unlocked_bonus_ids)),
+                    tuple(sorted((key, float(value).hex()) for key, value in v.stats.items())),
+                    tuple(sorted((key, float(value).hex()) for key, value in v.stats_raw.items())),
+                ))
                 _seen_qptn.setdefault(_qkey, []).append(v)
             for _qkey, qvars in _seen_qptn.items():
-                _cap = 5 if min_budget else (max(n_slots, 2) if allow_duplicates else 2)
+                _cap = 5 if min_budget else (max(n_slots, 2) if allow_duplicates else (1 if _profile_pool else 2))
                 # Count physical offers, not their mutually exclusive hypotheses.
                 selected_lots = set()
                 for v in sorted(qvars, key=lambda o: o.buyout_price):
@@ -1906,7 +1939,7 @@ def build_artifact_sets(
                 physical_id=o.physical_id,
             )
             _numba_candidates.append(_o2)
-            if _quality_context is not None and conservative and hasattr(o, '_quality_source'):
+            if hasattr(o, '_quality_source'):
                 _o2._quality_source = o._quality_source
             if hasattr(container, "_armor"):
                 _o2._danger_bounds = _artifact_danger_bounds(_o2, container)
@@ -1956,9 +1989,19 @@ def build_artifact_sets(
                 _search_fn = _beam_search_fn
             _sargs = (_numba_search_candidates, remaining_slots, effective_budget, remaining_slots,
                       prot_mult, cont_bonus_dict, stat_max, priorities, min_thresholds or {}, n_keep)
+            # constraint_lookahead: use suffix extrema to prune beam paths that
+            # can never satisfy min/max thresholds with the remaining slots.
+            # Enabled when the user set explicit stat constraints and we're doing
+            # a balanced search (not min_budget / lexicographic).
+            _constraint_lookahead = (
+                bool(min_thresholds or max_thresholds)
+                and not min_budget
+                and optimization_mode == "balanced"
+            )
             _skwargs = dict(allow_duplicates=allow_duplicates, min_budget=min_budget,
                             require_carry=carryable_only or guaranteed_carryable,
-                            max_thresholds=engine_maximum, objective=objective)
+                            max_thresholds=engine_maximum, objective=objective,
+                            constraint_lookahead=_constraint_lookahead)
             if min_budget and _beam_search_fn is None:
                 from ._min_budget_exact import solve
                 from ._min_budget_incumbents import INCUMBENTS, pool_key, profile_key
@@ -2049,9 +2092,48 @@ def build_artifact_sets(
                 _min_models.append(dict(model, container_id=container.item_id))
             else:
                 import os
-                _beam_width = (int(os.environ.get("STALZONE_BEAM_WIDTH", "10000"))
-                               if _beam_search_fn is None else 2000)
+                _base_beam_width = (int(os.environ.get("STALZONE_BEAM_WIDTH", "10000"))
+                                    if _beam_search_fn is None else 2000)
+                # Widen the beam when constraints are active: the search space is
+                # harder (only a fraction of combinations are feasible) so we need
+                # more diverse paths to reliably find the best feasible build.
+                # Cap widening at n_cand<=600 to keep latency acceptable.
+                _has_constraints = bool(min_thresholds or max_thresholds)
+                if _has_constraints and _beam_search_fn is None and _n_cand <= 600:
+                    _beam_width = min(_base_beam_width * 2,
+                                      int(os.environ.get("STALZONE_BEAM_WIDTH_MAX", "50000")))
+                else:
+                    _beam_width = _base_beam_width
                 scores, combos = _search_fn(*_sargs, beam_width=_beam_width, **_skwargs)
+                # ── Multi-pass augmentation ───────────────────────────────────
+                # When the user set stat thresholds, run extra beam passes with
+                # different candidate orderings (priority-stat order, constraint
+                # order, random shuffles) and merge the results.  This finds
+                # builds that the single-pass beam missed because the default
+                # (item_id, price) ordering buried good candidates.
+                # Skipped when a custom _beam_search_fn is injected (tests).
+                _run_augment = (
+                    _has_constraints
+                    and _beam_search_fn is None
+                    and _n_cand <= int(os.environ.get("STALZONE_AUGMENT_MAX_CAND", "800"))
+                    and os.environ.get("STALZONE_AUGMENT", "1") != "0"
+                )
+                if _run_augment:
+                    from ._search_augment import multi_pass_beam
+                    # _sargs layout: (candidates, k, budget, max_counter,
+                    #                 prot_mult, cont_bonus_dict, stat_max,
+                    #                 priorities, min_thresholds, n_keep)
+                    _aug_passes = int(os.environ.get("STALZONE_AUGMENT_PASSES", "2"))
+                    scores, combos = multi_pass_beam(
+                        scores, combos,
+                        _search_fn,
+                        _numba_search_candidates,
+                        _sargs[1:],          # tail after candidates
+                        _skwargs,
+                        _beam_width,
+                        n_keep,
+                        n_random_passes=_aug_passes,
+                    )
             # Post-process beam search results (same logic as numba)
             for rank in range(len(scores)):
                 if scores[rank] <= -1e17:
@@ -2392,7 +2474,8 @@ def build_artifact_sets(
         result.sort(key=objective.sort_key)
     result = _ordinary_result(result, _rescue_profiles, _rescue_complete, effective_budget,
                               min_thresholds, max_thresholds, carryable_only, guaranteed_carryable,
-                              allow_duplicates, priorities, objective, region, search_request, primary_pool=pool)
+                               allow_duplicates, priorities, objective, region, search_request, primary_pool=pool,
+                               refine_lexicographic=_beam_search_fn is None)
     for b in result:
         _warned_ids: set[str] = set()
         for a in b.artifacts:

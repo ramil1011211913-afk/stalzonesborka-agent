@@ -138,6 +138,8 @@ def build_portfolio_sets(budget, *, max_attempts=3, **request):
     reports = []
     def search(*args, **kwargs):
         kwargs.pop('beam_width', None)
+        # Portfolio strategies own their lookahead configuration.
+        kwargs.pop('constraint_lookahead', None)
         return search_portfolio(*args, max_attempts=max_attempts, attempts=reports, **kwargs)
     start = time.perf_counter()
     builds = build_artifact_sets(budget, _beam_search_fn=search, **request)

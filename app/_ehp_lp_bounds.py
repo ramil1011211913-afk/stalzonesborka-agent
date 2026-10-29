@@ -55,11 +55,13 @@ def transform(model,deadline):
  base=model['rows'][1:1+model['base_rows']]
  opts=[dict(stats=s,buyout_price=p) for s,p in zip(model['metric_inputs'],model['prices'])]
  bounds,proof=tighten(opts,base,['health_bonus','bullet_dmg_factor','regeneration_bonus','artefakt_heal','heal_efficiency'],deadline=deadline)
- symmetry=[]
+ from ._ehp_profile_order import prefix_rows
+ symmetry=prefix_rows(model)
  slots=int(model['rows'][0]['lo']);c=Circuit(opts,slots,model['bonuses'],base);c.tight_bounds=bounds
  required={REGISTRY[k][2] for k in model['metric_vars']};ids=c.metrics(required)
  for key,val in model['minimum_derived'].items():c.row({ids[REGISTRY[key][2]]:1},val,None)
  for key,val in model['maximum_derived'].items():c.row({ids[REGISTRY[key][2]]:1},None,val)
+ c.rows.extend(symmetry)
  goal={};constant=0.
  for key,a in zip(model['objective_keys'],model['objective_coefficients']):
   if key in REGISTRY:
