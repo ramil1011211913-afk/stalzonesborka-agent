@@ -783,6 +783,15 @@ def _artifact_calculation(option):
     if not hasattr(option, '_quality_source'):
         return None
     from ._quality_scenario import metadata as scenario_metadata
+    if hasattr(option, '_roll_plan_percent'):
+        return dict(mode='exact_hundredth_roll_plan', unknown_percent='roll_plan',
+                    scenario_percent=round(option.art_percent, 2),
+                    baseline_percent=round(option._roll_plan_source_percent, 6),
+                    target_percent=round(option._roll_plan_percent, 2),
+                    exact_hundredths=True,
+                    source_stored_percent=option._quality_source.art_percent,
+                    source_stats_random=option._quality_source.stats_random,
+                    unknown_percent_range=_percent_range(option.quality))
     mode = getattr(option, '_quality_percent_mode', 'minimum')
     meta = scenario_metadata(mode)
     return dict(mode=meta['mode'], unknown_percent=meta['unknown_percent'],
@@ -808,6 +817,8 @@ class ArtifactBuild:
     hidden_effect_warnings: list = field(default_factory=list)
     priorities: dict = field(default_factory=dict)
     objective_config: dict = field(default_factory=dict)
+    roll_plan: dict | None = None
+    roll_plan_search: dict | None = None
 
     def to_dict(self) -> dict:
         container_dict = None
@@ -866,6 +877,8 @@ class ArtifactBuild:
             "carryability_analysis": self.carryability_analysis,
             "guaranteed_carryable": self.guaranteed_carryable,
             "hidden_effect_warnings": self.hidden_effect_warnings,
+            "roll_plan": self.roll_plan,
+            "roll_plan_search": self.roll_plan_search,
             "artifacts": [
                 {
                     "item_id": a.item_id,
@@ -879,6 +892,8 @@ class ArtifactBuild:
                     "quality_name": a.quality_name,
                     "art_percent": round(a.art_percent, 1),
                     "art_percent_known": bool(a.art_percent_known),
+                    **({"roll_plan_percent": round(a._roll_plan_percent, 2)}
+                       if hasattr(a, '_roll_plan_percent') else {}),
                     **({"unknown_percent_range": _percent_range(a.quality)}
                        if not a.art_percent_known else {}),
                     **({"calculation": _artifact_calculation(a)}
@@ -1519,6 +1534,7 @@ def build_artifact_sets(
     min_budget: bool = False,
     conservative: bool = False,
     unknown_percent: str | None = None,
+    roll_optimize: bool = False,
     guaranteed_carryable: bool = False,
     exclude_item_ids: list[str] | None = None,
     template_filter: list[dict] | None = None,  # [{item_id, bonus_ids}] — restrict pool to these
@@ -1549,7 +1565,17 @@ def build_artifact_sets(
     actual. ``conservative=True`` is the backward-compatible minimum alias.
     """
     from ._quality_scenario import percent_views, resolve_mode
-    mode = resolve_mode(conservative, unknown_percent)
+    requested_mode = resolve_mode(conservative, unknown_percent)
+    if roll_optimize:
+        if guaranteed_carryable:
+            raise ValueError('roll_optimize cannot be combined with guaranteed_carryable')
+        if _quality_context is not None:
+            raise ValueError('roll_optimize is not supported with Max Quality')
+        # Start from the optimistic tier maximum, then lower only where the
+        # fixed-set planner must.  Known percentages remain actual.
+        mode = 'maximum'
+    else:
+        mode = requested_mode
     scenario = mode != 'maximum'
     from ._survivability import validate as validate_survivability
     validate_survivability(priorities, min_thresholds, max_thresholds, max_quality=_quality_context is not None, mode=optimization_mode)
@@ -1570,6 +1596,8 @@ def build_artifact_sets(
     # Price minimization is now explicit; zero balanced budget means free builds.
     min_budget = min_budget or optimization_mode == "min_budget"
     optimization_mode = "min_budget" if min_budget else optimization_mode
+    if roll_optimize and min_budget:
+        raise ValueError('roll_optimize is not supported with min_budget')
     Objective.create(priorities, objective_scales, optimization_mode, priority_order, objective_tolerance)
     # Ignored weights must not change candidate preparation or container choice.
     priorities = {key: weight for key, weight in priorities.items() if weight > 0}
@@ -1617,6 +1645,7 @@ def build_artifact_sets(
                           carryable_only=carryable_only, allow_duplicates=allow_duplicates,
                           min_budget=min_budget, conservative=conservative,
                           unknown_percent=mode,
+                          roll_optimize=bool(roll_optimize),
                           guaranteed_carryable=guaranteed_carryable, exclude_item_ids=exclude_item_ids,
                           template_filter=template_filter, optimization_mode=optimization_mode,
                           priority_order=priority_order, objective_scales=objective_scales,
@@ -1848,6 +1877,14 @@ def build_artifact_sets(
     total_combos = 0
     _rescue_profiles = []
     _rescue_complete = True
+
+    def _pool_valid(candidate):
+        """Search-pool validity; roll-aware search defers carry/max to planning."""
+        if roll_optimize:
+            return _final_valid(candidate, effective_budget, min_thresholds, None,
+                                False, False, allow_duplicates)
+        return _final_valid(candidate, effective_budget, min_thresholds, max_thresholds,
+                            carryable_only, guaranteed_carryable, allow_duplicates)
     _rescue_candidates = 0
 
     for container in containers:
@@ -2055,6 +2092,15 @@ def build_artifact_sets(
                         continue
                     target /= prot_mult
                 engine_maximum["__guaranteed_" + key] = target
+        # Roll-aware search deliberately lets infeasible-at-max builds through
+        # the candidate engine; the fixed-set planner lowers unknown rolls and
+        # the original constraints are enforced again after planning.
+        _search_require_carry = ((carryable_only or guaranteed_carryable)
+                                 and not roll_optimize)
+        _search_max_thresholds = None if roll_optimize else engine_maximum
+        # User-visible max thresholds are checked after planning.  The engine
+        # value above may also contain internal guaranteed-carry keys.
+        _post_max_thresholds = None if roll_optimize else max_thresholds
         # Choose search engine: beam search for large pools (n>100), numba for small k>=4
         _n_cand = len(_numba_search_candidates)
         _use_beam = _n_cand > 100 or _beam_search_fn is not None or min_budget
@@ -2069,13 +2115,13 @@ def build_artifact_sets(
             # Enabled when the user set explicit stat constraints and we're doing
             # a balanced search (not min_budget / lexicographic).
             _constraint_lookahead = (
-                bool(min_thresholds or max_thresholds)
+                bool(min_thresholds or (max_thresholds and not roll_optimize))
                 and not min_budget
                 and optimization_mode == "balanced"
             )
             _skwargs = dict(allow_duplicates=allow_duplicates, min_budget=min_budget,
-                            require_carry=carryable_only or guaranteed_carryable,
-                            max_thresholds=engine_maximum, objective=objective,
+                            require_carry=_search_require_carry,
+                            max_thresholds=_search_max_thresholds, objective=objective,
                             constraint_lookahead=_constraint_lookahead)
             if min_budget and _beam_search_fn is None:
                 from ._min_budget_exact import solve
@@ -2247,7 +2293,7 @@ def build_artifact_sets(
                         skip = True
                         break
                 if not skip:
-                    for prop_id, max_val in (max_thresholds or {}).items():
+                    for prop_id, max_val in (_post_max_thresholds or {}).items():
                         if combined.get(prop_id, 0) > max_val:
                             skip = True
                             break
@@ -2272,8 +2318,7 @@ def build_artifact_sets(
                 _ca = analyze_build_carryability(_b)
                 _b.carryability_analysis = _ca
                 _b.guaranteed_carryable = _ca.get("guaranteed_carryable", True)
-                if not _final_valid(_b, effective_budget, min_thresholds, max_thresholds,
-                                    carryable_only, guaranteed_carryable, allow_duplicates):
+                if not _pool_valid(_b):
                     continue
                 all_builds.append(_b)
                 total_combos += 1
@@ -2284,8 +2329,8 @@ def build_artifact_sets(
                 prot_mult, cont_bonus_dict, stat_max, priorities, min_thresholds or {}, n_keep,
                 allow_duplicates=allow_duplicates,
                 min_budget=min_budget,
-                require_carry=carryable_only or guaranteed_carryable,
-                max_thresholds=engine_maximum, objective=objective,
+                require_carry=_search_require_carry,
+                max_thresholds=_search_max_thresholds, objective=objective,
             )
             # Convert Numba results directly to ArtifactBuild — skip _process_combo
             # (stats already computed in _numba_search_candidates, no need to recompute)
@@ -2332,7 +2377,7 @@ def build_artifact_sets(
                         skip = True
                         break
                 if not skip:
-                    for prop_id, max_val in (max_thresholds or {}).items():
+                    for prop_id, max_val in (_post_max_thresholds or {}).items():
                         if combined.get(prop_id, 0) > max_val:
                             skip = True
                             break
@@ -2358,8 +2403,7 @@ def build_artifact_sets(
                 _ca = analyze_build_carryability(_b)
                 _b.carryability_analysis = _ca
                 _b.guaranteed_carryable = _ca.get("guaranteed_carryable", True)
-                if not _final_valid(_b, effective_budget, min_thresholds, max_thresholds,
-                                    carryable_only, guaranteed_carryable, allow_duplicates):
+                if not _pool_valid(_b):
                     continue
                 all_builds.append(_b)
                 total_combos += 1
@@ -2401,7 +2445,7 @@ def build_artifact_sets(
                         if combined.get(prop_id, 0) < min_val:
                             skip = True; break
                     if not skip:
-                        for prop_id, max_val in (max_thresholds or {}).items():
+                        for prop_id, max_val in (_post_max_thresholds or {}).items():
                             if combined.get(prop_id, 0) > max_val:
                                 skip = True; break
                     if skip: continue
@@ -2424,8 +2468,7 @@ def build_artifact_sets(
                     _ca = analyze_build_carryability(_b)
                     _b.carryability_analysis = _ca
                     _b.guaranteed_carryable = _ca.get("guaranteed_carryable", True)
-                    if not _final_valid(_b, effective_budget, min_thresholds, max_thresholds,
-                                        carryable_only, guaranteed_carryable, allow_duplicates):
+                    if not _pool_valid(_b):
                         continue
                     all_builds.append(_b)
                     total_combos += 1
@@ -2441,8 +2484,8 @@ def build_artifact_sets(
                 _process_combo(full_combo, container, art_price,
                                priorities, min_thresholds, all_builds, effective_budget,
                                stat_max=stat_max, min_budget=min_budget,
-                               max_thresholds=max_thresholds, objective=objective,
-                               require_carry=carryable_only or guaranteed_carryable, allow_duplicates=allow_duplicates,
+                               max_thresholds=_post_max_thresholds, objective=objective,
+                               require_carry=_search_require_carry, allow_duplicates=allow_duplicates,
                                require_guaranteed=guaranteed_carryable)
                 total_combos += 1
 
@@ -2457,11 +2500,24 @@ def build_artifact_sets(
 
     # Sort: by price (min_budget) or carryable+score (normal).
     # min_budget: sort by price only — user wants cheapest, not carryable.
-    all_builds = [_decorate_armor(b) for b in all_builds
-                  if len(b.artifacts) == b.container.slots and _final_valid(b, effective_budget, min_thresholds, max_thresholds,
-                                  carryable_only, guaranteed_carryable, allow_duplicates)]
+    candidates = [b for b in all_builds
+                  if len(b.artifacts) == b.container.slots and _pool_valid(b)]
+    roll_plan_search = None
+    if roll_optimize:
+        from ._roll_plan import optimize_pool
+        candidates, roll_plan_search = optimize_pool(
+            candidates, objective, min_thresholds, max_thresholds,
+            carry=carryable_only, duplicates=allow_duplicates, limit=200)
+        # The planner works on the optimistic baseline; enforce the original
+        # request constraints once more on the planned result.
+        candidates = [b for b in candidates
+                      if _final_valid(b, effective_budget, min_thresholds, max_thresholds,
+                                      carryable_only, guaranteed_carryable, allow_duplicates)]
+    all_builds = [_decorate_armor(b) for b in candidates]
     for build in all_builds:
         build._search_request = search_request
+        if roll_plan_search is not None:
+            build.roll_plan_search = roll_plan_search
     _fsk = objective.sort_key
     all_builds.sort(key=_fsk)
 
@@ -2559,7 +2615,7 @@ def build_artifact_sets(
     result = _ordinary_result(result, _rescue_profiles, _rescue_complete, effective_budget,
                               min_thresholds, max_thresholds, carryable_only, guaranteed_carryable,
                                allow_duplicates, priorities, objective, region, search_request, primary_pool=pool,
-                               refine_lexicographic=_beam_search_fn is None)
+                               refine_lexicographic=(_beam_search_fn is None and not roll_optimize))
     for b in result:
         _warned_ids: set[str] = set()
         for a in b.artifacts:

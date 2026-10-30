@@ -117,6 +117,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="form-group"><label><input type="checkbox" id="stockOnlyToggle"> Только стоковые артефакты</label><small>Использовать для сборки только артефакты без заточки (+0)</small></div>
 <div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0">Макс. стат</label><label class="switch"><input type="checkbox" id="maxStatToggle"><span class="slider"></span></label></div>
 <div class="form-group" style="min-width:190px"><label title="Известный процент лота сохраняется; выбранная точка диапазона применяется только к неизвестным процентам">Процент неизвестных лотов</label><select id="unknownPercentMode" onchange="updateQualityConservativeHint()"><option value="minimum">Гарант. минимум</option><option value="midpoint" selected>Ожидаемо (середина)</option><option value="maximum">Максимум тира</option></select><small>Гарантия / ожидаемая оценка / оптимистичный потолок.</small></div>
+<div class="form-group" style="min-width:210px"><label><input type="checkbox" id="rollOptimizeToggle" onchange="updateQualityConservativeHint()"> 🎲 Планировать роллы</label><small>Старт от максимума тира; для неизвестных лотов подбираются точные проценты в сотых, чтобы сборка прошла по носимости и лимитам. Известные проценты не меняются.</small></div>
 <div class="form-group" id="qualityDeepField" hidden><label><input type="checkbox" id="qualityDeep" onchange="updateQualityConservativeHint()" disabled> Глубокая оптимизация — 300 секунд</label><small>Общий бюджет поиска; OPTIMAL не гарантируется.</small></div>
 <div class="form-group" id="primaryOnlyField" hidden><label><input type="checkbox" id="primaryOnly" onchange="if(this.checked)document.getElementById('tolerance').value='0'" disabled> Максимум EHP без минимизации цены</label><small>Только Deep и единственный приоритет EHP. Допуск бюджета 0%; цена ограничена бюджетом; минимальная цена не оптимизируется.</small></div>
 <button class="btn" id="buildBtn">Подобрать</button>
@@ -180,8 +181,14 @@ function updateQualityConservativeHint() {
     if (!primaryAllowed) document.getElementById('primaryOnly').checked = false;
     const percentMode = document.getElementById('unknownPercentMode').value;
     const percentHint = document.getElementById('qualityConservativeHint');
-    percentHint.hidden = percentMode === 'maximum';
-    if (percentMode === 'minimum') {
+    const rollToggle = document.getElementById('rollOptimizeToggle');
+    const rollAllowed = !isQuality && document.getElementById('objectiveMode').value !== 'min_budget';
+    rollToggle.disabled = !rollAllowed;
+    if (!rollAllowed) rollToggle.checked = false;
+    percentHint.hidden = percentMode === 'maximum' && !rollToggle.checked;
+    if (rollToggle.checked) {
+        percentHint.textContent = 'Известные проценты не меняются. Для неизвестных лотов поиск стартует от максимума тира и подбирает точные целевые роллы в сотых, чтобы сборка прошла по носимости и лимитам. Это план, а не гарантия рынка.';
+    } else if (percentMode === 'minimum') {
         percentHint.textContent = 'Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.';
     } else if (percentMode === 'midpoint') {
         percentHint.textContent = 'Известный процент лота сохраняется; для неизвестных процентов берётся середина диапазона качества как ожидаемая оценка. Фактический ролл может быть ниже; это не гарантия.';
@@ -728,6 +735,9 @@ async function findBuilds() {
         params.append('priority_order', JSON.stringify(lexOrder));
     }
     params.append('unknown_percent', document.getElementById('unknownPercentMode').value);
+    if (document.getElementById('rollOptimizeToggle').checked && objectiveMode !== 'max_quality' && objectiveMode !== 'min_budget') {
+        params.append('roll_optimize', 'true');
+    }
     // Exclude: merge UI excludes + template-mode artifact restriction
     const _allExclude = [...(window._excludeIds || []), ...(window._templateExcludeIds || [])];
     const _uniqExclude = [...new Set(_allExclude)];
@@ -928,9 +938,11 @@ async function findBuilds() {
                     }
                 }
                 const statsHtml = baseHtml + (bonusHtml ? `<div style="border-top:1px dashed #333;margin-top:3px;padding-top:2px"></div>${bonusHtml}` : '') + lockedHtml;
-                // Recommended percent for unresearched
+                // Planned exact-hundredth roll for an unknown percentage
                 let pctHtml = '';
-                if (a.recommended_percent) {
+                if (a.roll_plan_percent !== undefined) {
+                    pctHtml = `<div class="ptn" style="color:#53c353" title="Целевой ролл неизвестного процента; известные проценты не меняются">🎲 ${escapeHtml(a.roll_plan_percent)}% <span style="color:#888;font-size:.85em">(план)</span></div>`;
+                } else if (a.recommended_percent) {
                     pctHtml = `<div class="ptn" style="color:#53c353" title="Рекомендуемый процент для ролла">≈${escapeHtml(a.recommended_percent)}% (ролл)</div>`;
                 } else if (a.art_percent_known === false && a.unknown_percent_range) {
                     const pr = a.unknown_percent_range;
@@ -985,6 +997,20 @@ async function findBuilds() {
                     <span style="cursor:pointer;color:#2e7b9e;font-size:.8em;border:1px solid #2e7b9e;border-radius:4px;padding:1px 6px" onclick="toggleCompare(${i})" id="cmpBtn_${i}" title="Сравнить сборки">⇄ Сравнить</span>
                 </div>
                 ${warnHtml}
+                ${(() => {
+                    const rp = build.roll_plan;
+                    if (!rp || !rp.enabled) return '';
+                    const changed = (rp.artifacts || []).filter(x => x.changed);
+                    if (!changed.length) return '';
+                    const rows = changed.map(x =>
+                        `<div style="font-size:.8em;color:#b8e6b8">🎲 ${escapeHtml(x.name_ru || x.item_id)}: <b>${escapeHtml(x.percent)}%</b> <span style="color:#777">(было ${escapeHtml(x.baseline_percent)}%)</span></div>`
+                    ).join('');
+                    return `<div style="background:#122a1a;border:1px solid #53c353;border-radius:6px;padding:8px;margin-bottom:8px">
+                        <div style="color:#53c353;font-weight:bold;font-size:.9em;margin-bottom:4px">План роллов неизвестных процентов (сотые)</div>
+                        ${rows}
+                        <div style="color:#888;font-size:.75em;margin-top:4px">${escapeHtml(rp.note || '')}</div>
+                    </div>`;
+                })()}
                 <div class="artifacts-grid">${cHtml}${armHtml}${aHtml}</div>
                 <div class="combined-stats">${csHtml}</div>
                 ${build.tips && build.tips.length > 0 ? (() => {
@@ -1194,7 +1220,10 @@ async function applyParseResult(d, btn, promptText) {
     } else if (d.conservative !== undefined) {
         document.getElementById('unknownPercentMode').value = d.conservative ? 'minimum' : 'midpoint';
     }
-    if (d.unknown_percent !== undefined || d.conservative !== undefined) {
+    if (d.roll_optimize !== undefined) {
+        document.getElementById('rollOptimizeToggle').checked = !!d.roll_optimize;
+    }
+    if (d.unknown_percent !== undefined || d.conservative !== undefined || d.roll_optimize !== undefined) {
         updateQualityConservativeHint();
     }
     if (d.stock_only !== undefined) {
@@ -1375,7 +1404,7 @@ function showArtifactStats(buildIdx, artIdx) {
             <div style="color:#e94560;font-weight:bold">${escapeHtml(a.name_ru)}</div>
             <span style="cursor:pointer;color:#888;font-size:1.2em" onclick="document.getElementById('pricePopup').style.display='none'">✕</span>
         </div>
-        <div style="font-size:.8em;color:#666;margin-bottom:6px">${escapeHtml(a.quality_name)} | ptn=${a.ptn} | ${a.art_percent}%${a.art_percent_known === false && a.unknown_percent_range ? ` (${a.unknown_percent_range.min}–${a.unknown_percent_range.maximum}%)` : ''} | ${a.is_owned ? 'В ХРАН' : a.buyout_price.toLocaleString('ru') + ' ₽'}</div>
+        <div style="font-size:.8em;color:#666;margin-bottom:6px">${escapeHtml(a.quality_name)} | ptn=${a.ptn} | ${a.roll_plan_percent !== undefined ? `${a.roll_plan_percent}% (план, база ${a.art_percent}%)` : `${a.art_percent}%`}${a.art_percent_known === false && a.unknown_percent_range ? ` (${a.unknown_percent_range.min}–${a.unknown_percent_range.maximum}%)` : ''} | ${a.is_owned ? 'В ХРАН' : a.buyout_price.toLocaleString('ru') + ' ₽'}</div>
         <table style="width:100%">
             <thead><tr><th style="text-align:left;color:#666;font-size:.8em">Стат</th><th style="color:#666;font-size:.8em">Значение</th><th style="color:#666;font-size:.8em">Вклад</th></tr></thead>
             <tbody>${rows}</tbody>
