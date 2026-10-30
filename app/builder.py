@@ -772,6 +772,26 @@ class ContainerOption:
     icon_url: str = ""
 
 
+def _percent_range(quality):
+    """Nominal quality range for transparent unknown-percent displays."""
+    from ._quality_scenario import percent_range
+    return percent_range(quality)
+
+
+def _artifact_calculation(option):
+    """Request-local scenario provenance for an unknown-percent view."""
+    if not hasattr(option, '_quality_source'):
+        return None
+    from ._quality_scenario import metadata as scenario_metadata
+    mode = getattr(option, '_quality_percent_mode', 'minimum')
+    meta = scenario_metadata(mode)
+    return dict(mode=meta['mode'], unknown_percent=meta['unknown_percent'],
+                scenario_percent=round(option.art_percent, 6),
+                source_stored_percent=option._quality_source.art_percent,
+                source_stats_random=option._quality_source.stats_random,
+                unknown_percent_range=_percent_range(option.quality))
+
+
 @dataclass
 class ArtifactBuild:
     artifacts: list[ArtifactOption] = field(default_factory=list)
@@ -858,12 +878,11 @@ class ArtifactBuild:
                     "quality": a.quality,
                     "quality_name": a.quality_name,
                     "art_percent": round(a.art_percent, 1),
-                    **({"calculation": {
-                        "mode": "minimum_quality_point_scenario",
-                        "scenario_percent": a.art_percent,
-                        "source_stored_percent": a._quality_source.art_percent,
-                        "source_stats_random": a._quality_source.stats_random,
-                    }} if hasattr(a, '_quality_source') else {}),
+                    "art_percent_known": bool(a.art_percent_known),
+                    **({"unknown_percent_range": _percent_range(a.quality)}
+                       if not a.art_percent_known else {}),
+                    **({"calculation": _artifact_calculation(a)}
+                       if hasattr(a, '_quality_source') else {}),
                     "ptn": a.ptn,
                     "buyout_price": a.buyout_price,
                     "is_owned": a.is_owned,
@@ -993,6 +1012,8 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
     from . import _feasibility_fallback as rescue
     from ._quality_scenario import current_views
     started = time.monotonic()
+    scenario = bool(request.get('conservative')
+                    or request.get('unknown_percent') in ('minimum', 'midpoint'))
     models = []
     # Recheck real auction descriptors, including expiry, even for primary hits.
     # Anonymous programmatic fixtures retain their previous non-market contract.
@@ -1022,7 +1043,7 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
         except Exception:
             return rescue.SearchResults([], [dict(state='UNKNOWN', reason='market_validation_error')], complete=False)
         if result:
-            if refine_lexicographic and objective.mode == 'lexicographic' and not (guaranteed or request.get('conservative')):
+            if refine_lexicographic and objective.mode == 'lexicographic' and not (guaranteed or scenario):
                 from ._beam_refine import refine_incumbent
                 try:
                     best = refine_incumbent(profiles, min(result, key=objective.sort_key),
@@ -1035,7 +1056,7 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
                     # primary incumbent, including on allocation/solver errors.
                     log.exception('Secondary Beam refinement failed; retaining verified incumbent')
             refinement_models = []
-            if refine_lexicographic and not (guaranteed or request.get('conservative')):
+            if refine_lexicographic and not (guaranteed or scenario):
                 from ._ordinary_refine import refine_incumbent as refine_linear
                 try:
                     best, refinement_models = refine_linear(profiles, min(result, key=objective.sort_key),
@@ -1062,7 +1083,7 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
         if time.monotonic() >= deadline:
             models.append(info)
             continue
-        if guaranteed or request.get('conservative'):
+        if guaranteed or scenario:
             models.append(dict(info, reason='unsupported_transform'))
             continue
         try:
@@ -1267,6 +1288,7 @@ def load_artifact_options(priorities: dict | None = None,
                           max_price: int | None = None,
                           region: str | None = None,
                           conservative: bool = False,
+                          unknown_percent: str | None = None,
                           *, stock_only: bool = False, _quality_audit: dict | None = None) -> list[ArtifactOption]:
     """Load artifact options from active auction lots — single JOIN query, no N+1.
 
@@ -1276,6 +1298,11 @@ def load_artifact_options(priorities: dict | None = None,
     - ptn=0 → base stats only, no bonus simulation (don't fake research).
     - Smart bonus-combo filter: only combos containing priority stats, max 5 per lot.
     - Score: _score_option only — no counter-art bonus.
+
+    ``unknown_percent`` selects the point used only for lots whose percentage is
+    not actually known: minimum, midpoint (expected) or maximum. Known stored
+    percentages are preserved in every mode. ``conservative=True`` is the
+    backward-compatible alias for ``minimum``.
     """
     if _quality_audit is not None:
         from ._quality_candidates import load
@@ -1428,9 +1455,10 @@ def load_artifact_options(priorities: dict | None = None,
                 opt.score = _score_option(stats_container, priorities)
                 options.append(opt)
 
-    if conservative:
-        from ._quality_scenario import minimum_views
-        options = minimum_views(options, priorities)
+    from ._quality_scenario import percent_views, resolve_mode
+    mode = resolve_mode(conservative, unknown_percent)
+    if mode != 'maximum':
+        options = percent_views(options, priorities, mode)
     options.sort(key=lambda o: o.score, reverse=True)
     log.info("Loaded %d artifact options from %d base artefacts", len(options), len(rows))
     return options
@@ -1490,6 +1518,7 @@ def build_artifact_sets(
     allow_duplicates: bool = False,
     min_budget: bool = False,
     conservative: bool = False,
+    unknown_percent: str | None = None,
     guaranteed_carryable: bool = False,
     exclude_item_ids: list[str] | None = None,
     template_filter: list[dict] | None = None,  # [{item_id, bonus_ids}] — restrict pool to these
@@ -1514,7 +1543,14 @@ def build_artifact_sets(
     min_budget=True: minimize price subject to constraints; budget=0 removes the cap.
     Scales are fixed once across all selected containers. Lexicographic mode
     requires an explicit priority_order and uses fixed tolerance bins.
+
+    ``unknown_percent`` selects the point used only for unknown percentages:
+    minimum, midpoint (expected) or maximum. Known stored percentages stay
+    actual. ``conservative=True`` is the backward-compatible minimum alias.
     """
+    from ._quality_scenario import percent_views, resolve_mode
+    mode = resolve_mode(conservative, unknown_percent)
+    scenario = mode != 'maximum'
     from ._survivability import validate as validate_survivability
     validate_survivability(priorities, min_thresholds, max_thresholds, max_quality=_quality_context is not None, mode=optimization_mode)
     _request_started = time.monotonic()
@@ -1565,7 +1601,8 @@ def build_artifact_sets(
         # Use max_lot_price * max_slots instead of 10B to avoid
         # loading extremely expensive lots that skew stat_max
         # and cause the search to miss cheap builds.
-        _all_opts = load_artifact_options(priorities=priorities, region=region, conservative=conservative,
+        _all_opts = load_artifact_options(priorities=priorities, region=region, conservative=False,
+                                         unknown_percent=mode,
                                          **({'stock_only': True} if stock_only else {}))
         if stock_only:
             _all_opts = _stock_options(_all_opts)
@@ -1579,6 +1616,7 @@ def build_artifact_sets(
                           region=region, container_id=container_id, owned_artifacts=owned_artifacts,
                           carryable_only=carryable_only, allow_duplicates=allow_duplicates,
                           min_budget=min_budget, conservative=conservative,
+                          unknown_percent=mode,
                           guaranteed_carryable=guaranteed_carryable, exclude_item_ids=exclude_item_ids,
                           template_filter=template_filter, optimization_mode=optimization_mode,
                           priority_order=priority_order, objective_scales=objective_scales,
@@ -1638,16 +1676,16 @@ def build_artifact_sets(
 
     # Auction options
     options = load_artifact_options(priorities=priorities, max_price=effective_budget, region=region,
-                                    conservative=conservative and _quality_context is None,
+                                    conservative=False,
+                                    unknown_percent=(mode if _quality_context is None else None),
                                     **({'stock_only': True} if stock_only else {}), **_quality_load)
     if _quality_context is not None and _quality_context['candidate_audit'].get('error'):
         _quality_context['error'] = _quality_context['candidate_audit']['error']
         return []
     if stock_only:
         options = _stock_options(options)
-    if _quality_context is not None and conservative:
-        from ._quality_scenario import minimum_views
-        options = minimum_views(options, priorities)
+    if _quality_context is not None and scenario:
+        options = percent_views(options, priorities, mode)
     if _quality_context is not None and len(options) > _quality_context['max_input_candidates']:
         _quality_context['error'] = 'input_candidate_limit'
         return []
@@ -1757,8 +1795,8 @@ def build_artifact_sets(
         return []
     if _quality_context is not None:
         _quality_context['candidate_audit']['owned_candidates'] = len(owned_opts)
-    if _quality_context is not None and conservative:
-        owned_opts = minimum_views(owned_opts, priorities)
+    if _quality_context is not None and scenario:
+        owned_opts = percent_views(owned_opts, priorities, mode)
 
     # One immutable normalization for the whole request, before any beam trim.
     stat_max = _fixed_objective_scales(
@@ -1799,8 +1837,9 @@ def build_artifact_sets(
                     container.inner_protection, container.effectiveness)
                 view = replace(o, stats=values, stats_raw=raw, stats_names=names,
                                recommended_percent=recommended)
-                if conservative and not getattr(o, 'art_percent_known', False):
+                if scenario and not getattr(o, 'art_percent_known', False):
                     view._quality_source = source(o)
+                    view._quality_percent_mode = getattr(o, '_quality_percent_mode', mode)
                 profile.append(view)
             _quality_context['profiles'].append((container, sorted(profile, key=lambda o: (o.item_id, o.buyout_price))))
         return []

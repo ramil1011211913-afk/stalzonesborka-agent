@@ -9,7 +9,8 @@ from ._quality_time import DEEP_SECONDS, DEEP_NODE_LIMIT, VALIDATION_RESERVE, re
 
 
 class QualityResults(list):
-    def __init__(self, builds=(), *, state='UNKNOWN', reason='unknown', models=(), timings=None, conservative=False):
+    def __init__(self, builds=(), *, state='UNKNOWN', reason='unknown', models=(), timings=None,
+                 conservative=False, unknown_percent=None):
         super().__init__(builds)
         text = {'OPTIMAL': 'Численный оптимум полного ранга доказан в проверенных подготовленных пулах.',
                 'FEASIBLE': 'Допустимая сборка найдена; оптимальность полного ранга не доказана.',
@@ -47,10 +48,13 @@ class QualityResults(list):
                 candidates=limits.MAX_CANDIDATES, profiles=limits.MAX_PROFILES, rows=limits.MAX_ROWS,
                 nonzeros=limits.MAX_NONZEROS, nodes=limits.MAX_NODES, worker_memory_bytes=limits.MEMORY_BYTES,
                 simultaneous_heavy_tasks=1))
-        if conservative:
-            from ._quality_scenario import metadata
-            self.search_status['calculation'] = metadata()
-            self.search_status['message'] += ' ' + metadata()['message']
+        from ._quality_scenario import metadata, resolve_mode, scenario_active
+        mode = resolve_mode(conservative, unknown_percent)
+        self.unknown_percent = mode
+        if scenario_active(mode) or unknown_percent is not None:
+            calculation = metadata(mode)
+            self.search_status['calculation'] = calculation
+            self.search_status['message'] += ' ' + calculation['message']
 
 
 def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimization=False, primary_only=False, cancel_event=None, _deadline=None, _market=None, _primary_node_budget=50000, **request):
@@ -62,10 +66,14 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
     from . import builder as b
     from ._feasibility_fallback import current_candidates
     from ._physical_items import physical_key
+    from ._quality_scenario import resolve_mode
+    mode = resolve_mode(bool(request.get('conservative')), request.get('unknown_percent'))
+    request['unknown_percent'] = mode
+    scenario = mode != 'maximum'
     start = time.monotonic()
     context = {}
     def response(*args, **kwargs):
-        result = QualityResults(*args, conservative=bool(request.get('conservative')), **kwargs)
+        result = QualityResults(*args, unknown_percent=mode, **kwargs)
         from . import _survivability as derived
         if derived.requested(request.get('priorities'), request.get('min_thresholds'), request.get('max_thresholds')):
             result.search_status['derived_metrics'] = derived.provenance()
@@ -91,8 +99,7 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
         raise ValueError('Private search hooks are not quality request parameters')
     if request.get('guaranteed_carryable'):
         return response(reason='unsupported_guaranteed_or_conservative')
-    conservative = bool(request.get('conservative'))
-    if conservative:
+    if scenario:
         from ._quality_scenario import current_views, physical_digest, metadata, source
         # These views retain their original descriptors; never compare a scenario
         # percentage with the stored physical percentage or weaken that check.
@@ -144,7 +151,7 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
             ambiguous = False
             for o in candidates:
                 if o.is_owned:
-                    physical = source(o) if conservative else o
+                    physical = source(o) if scenario else o
                     value = (physical.item_id, physical.quality, physical.ptn, physical.art_percent, tuple(sorted(physical.unlocked_bonus_ids)))
                     key = physical_key(o)
                     ambiguous |= key in owned and owned[key] != value
@@ -239,9 +246,9 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
                 minimum=minimum, maximum=maximum, carry=carry, allow_duplicates=duplicates,
                 container_effectiveness=container.effectiveness, container_protection=container.inner_protection,
                 bonuses=container.bonus_stats, armor_level=(getattr(container, '_armor', None) or {}).get('level'))
-            if conservative:
+            if scenario:
                 models[-1]['physical_pool_sha256'] = physical_digest(candidates)
-                models[-1]['conditions']['calculation'] = metadata()
+                models[-1]['conditions']['calculation'] = metadata(mode)
         builds.sort(key=(lambda build:(-build.combined_stats['effective_health'],tuple(sorted(str(physical_key(o)) for o in build.artifacts)))) if primary_only else objective.sort_key)
         winner = builds[:1]
         state = 'OPTIMAL' if winner and complete else 'FEASIBLE' if winner else 'INFEASIBLE' if models and complete else 'UNKNOWN'
@@ -280,8 +287,10 @@ def build_max_quality_sets(budget, *, quality_timeout=limits.DEFAULT_SECONDS, de
         raise ValueError('Private search hooks are not quality request parameters')
     if request.get('min_budget') or request.get('optimization_mode', 'balanced') not in ('balanced', 'lexicographic'):
         raise ValueError('Max quality supports balanced or lexicographic objectives, not min_budget')
+    from ._quality_scenario import resolve_mode
+    mode = resolve_mode(bool(request.get('conservative')), request.get('unknown_percent'))
     def response(reason, models=()):
-        result = QualityResults(reason=reason, models=models, conservative=bool(request.get('conservative')))
+        result = QualityResults(reason=reason, models=models, unknown_percent=mode)
         result.search_status['limits']['seconds'] = quality_timeout
         if deep_optimization:
             result.search_status['deep_optimization'] = True

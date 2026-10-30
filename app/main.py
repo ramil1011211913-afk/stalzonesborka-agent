@@ -182,7 +182,9 @@ def api_builds(
     carryable_only: bool = Query(True, description="Filter to carryable builds only"),
     allow_duplicates: bool = Query(False, description="Allow same item_id multiple times"),
     min_budget: bool = Query(False, description="Minimize price subject to constraints; budget=0 removes the cap"),
-    conservative: bool = Query(False, description="Calculate unknown quality percentages at tier minimum; known lot percentages stay actual"),
+    conservative: bool = Query(False, description="Backward-compatible alias for unknown_percent=minimum"),
+    unknown_percent: str | None = Query(None, pattern="^(minimum|midpoint|maximum)$",
+        description="Point used only for unknown quality percentages: minimum (guarantee), midpoint (expected) or maximum (optimistic); known lot percentages stay actual"),
     guaranteed_carryable: bool = Query(False, description="Only builds carryable at MAX art% of tier"),
     exclude: str | None = Query(None, description='JSON: ["y5ro"] — item_ids to exclude from builds'),
     prompt_text: str | None = Query(None, description="Original natural language prompt from AI parser"),
@@ -223,6 +225,8 @@ def api_builds(
         order = json.loads(priority_order) if priority_order else None
         scales = json.loads(objective_scales) if objective_scales else None
         armor_list = json.loads(armor_ids) if armor_ids else None
+        from ._quality_scenario import resolve_mode
+        unknown_mode = resolve_mode(conservative, unknown_percent)
         if armor_list is not None and (not isinstance(armor_list, list) or not armor_list or
                                       any(a is not None and not isinstance(a, str) for a in armor_list)):
             raise ValueError("armor_ids must be a nonempty JSON list of IDs or null")
@@ -298,7 +302,8 @@ def api_builds(
             carryable_only=carryable_only,
             allow_duplicates=allow_duplicates,
             min_budget=min_budget,
-            conservative=conservative,
+            conservative=(unknown_mode == 'minimum'),
+            unknown_percent=unknown_mode,
             guaranteed_carryable=guaranteed_carryable,
             exclude_item_ids=exclude_list,
             optimization_mode=mode, priority_order=order,
@@ -337,7 +342,8 @@ def api_builds(
             "carryable_only": carryable_only,
             "allow_duplicates": allow_duplicates,
             "min_budget": min_budget,
-            "conservative": conservative,
+            "conservative": unknown_mode == 'minimum',
+            "unknown_percent": unknown_mode,
             "exclude": exclude_list,
             "prompt_text": prompt_text or "",
             "armor_id": armor_id, "armor_ids": armor_list, "armor_level": armor_level,
@@ -381,7 +387,8 @@ def api_builds(
         "max_thresholds": maxs,
         "owned_count": len(owned_list),
         "exclude": exclude_list,
-        "conservative": conservative,
+        "conservative": unknown_mode == 'minimum',
+        "unknown_percent": unknown_mode,
         "allow_duplicates": allow_duplicates,
         "carryable_only": carryable_only,
         "builds_found": len(builds),
@@ -479,6 +486,7 @@ async def parse_prompt(body: dict = None):
     def _deterministic_parse(txt: str) -> dict:
         t = txt.lower()
         result = {"priorities": {}, "allow_duplicates": False, "conservative": False,
+                  "unknown_percent": "midpoint",
                   "carryable_only": True, "guaranteed_carryable": False,
                   "container_id": None, "budget": 0}
 
@@ -538,11 +546,19 @@ async def parse_prompt(body: dict = None):
             result["allow_duplicates"] = True
         if any(w in t for w in ["гарант", "гарантия", "худший", "без перекрут", "без перекрута", "conservative", "консерват"]):
             result["conservative"] = True
+            result["unknown_percent"] = "minimum"
+        elif any(w in t for w in ["ожидаем", "в среднем", "середин", "expected"]):
+            result["conservative"] = False
+            result["unknown_percent"] = "midpoint"
+        elif any(w in t for w in ["максимум", "макс. процент", "лучший ролл", "maximum"]):
+            result["conservative"] = False
+            result["unknown_percent"] = "maximum"
         if any(w in t for w in ["переносимый", "носибельност", "носибел"]):
             result["carryable_only"] = True
         if any(w in t for w in ["гарант носиб", "гарантир носиб", "гарантированная носиб", "гарантированную носиб"]):
             result["guaranteed_carryable"] = True
             result["conservative"] = True
+            result["unknown_percent"] = "minimum"
 
         # Combat: "лоб в лоб", "танк", "приведенка", "ehp" → bullet + health
         if any(w in t for w in ["лоб в лоб", "лоб-в-лоб", "танк", "приведенк", "приведенное здоровье", "приведён", "ehp", "эхп", "пвп", "pvp"]):
@@ -638,7 +654,8 @@ async def parse_prompt(body: dict = None):
 
 Верни JSON:
 {{"priorities": {{"prop_id": вес_0_10}}, "budget": число_рублей, "container_id": "id_или_null",
-  "allow_duplicates": bool, "conservative": bool, "carryable_only": bool,
+  "allow_duplicates": bool, "conservative": bool, "unknown_percent": "minimum"|"midpoint"|"maximum",
+  "carryable_only": bool,
   "min_thresholds": {{"prop_id": мин}}, "max_thresholds": {{"prop_id": макс}},
   "exclude": ["item_id"]}}
  exclude: пустой массив [] если нет исключений, иначе массив item_id.
@@ -647,8 +664,11 @@ async def parse_prompt(body: dict = None):
 скорость→speed_modifier, общая скорость→total_speed (speed_modifier + sprint_speed_modifier),
 выносливость→stamina_bonus, стойкость→stopping_protection.
 50млн/50кк→50000000. бочонок→rgoz.
-"Гарант. мин." / "гарантированный минимум" / "без перекрута" → conservative:true.
-conservative означает: известный процент лота сохраняется, а минимальный процент качества применяется только к неизвестным процентам.
+"Гарант. мин." / "гарантированный минимум" / "худший" / "без перекрута" → unknown_percent:"minimum", conservative:true.
+"Ожидаемо" / "в среднем" / "середина" → unknown_percent:"midpoint", conservative:false.
+"Максимум" / "лучший ролл" / "макс. процент" → unknown_percent:"maximum", conservative:false.
+Если режим не указан — unknown_percent:"midpoint".
+unknown_percent означает: известный процент лота сохраняется, а выбранная точка диапазона качества применяется только к неизвестным процентам.
 от X до Y кг→min+max thresholds (НЕ conservative — это ограничение диапазона, separate feature).
 ВАЖНО: если указан диапазон (от/до) для стата — поставь ему приоритет 2-3, не 0 и не 10.
 Приоритет 0 = стат не попадёт в пул кандидатов, оптимизатор не найдёт артефакты.
@@ -702,6 +722,12 @@ guaranteed_carryable: true если "гарантированная носибе
                         parsed.setdefault("container_id", None)
                         parsed.setdefault("allow_duplicates", False)
                         parsed.setdefault("conservative", False)
+                        parsed.setdefault("unknown_percent",
+                                          "minimum" if parsed.get("conservative") else "midpoint")
+                        if parsed.get("unknown_percent") not in ("minimum", "midpoint", "maximum"):
+                            parsed["unknown_percent"] = ("minimum" if parsed.get("conservative")
+                                                         else "midpoint")
+                        parsed["conservative"] = parsed["unknown_percent"] == "minimum"
                         parsed.setdefault("carryable_only", True)
                         parsed.setdefault("guaranteed_carryable", False)
                         parsed.setdefault("exclude", [])
@@ -734,6 +760,7 @@ def api_export_lunarzone(
     carryable_only: bool = Query(True),
     min_budget: bool = Query(False),
     conservative: bool = Query(False),
+    unknown_percent: str | None = Query(None, pattern="^(minimum|midpoint|maximum)$"),
     exclude: str | None = Query(None),
     armor_id: str | None = Query(None),
     armor_ids: str | None = Query(None),
@@ -765,6 +792,8 @@ def api_export_lunarzone(
         order = json.loads(priority_order) if priority_order else None
         scales = json.loads(objective_scales) if objective_scales else None
         armor_list = json.loads(armor_ids) if armor_ids else None
+        from ._quality_scenario import resolve_mode
+        unknown_mode = resolve_mode(conservative, unknown_percent)
         if armor_list is not None and (not isinstance(armor_list, list) or not armor_list or
                                       any(a is not None and not isinstance(a, str) for a in armor_list)):
             raise ValueError("armor_ids must be a nonempty JSON list of IDs or null")
@@ -809,7 +838,8 @@ def api_export_lunarzone(
             min_thresholds=mins, max_thresholds=maxs, top_n=top_n,
             region=Config.REGION, container_id=container_id,
             owned_artifacts=owned_list, carryable_only=carryable_only,
-            min_budget=min_budget, conservative=conservative,
+            min_budget=min_budget, conservative=(unknown_mode == 'minimum'),
+            unknown_percent=unknown_mode,
             exclude_item_ids=exclude_list,
             optimization_mode=mode, priority_order=order,
             objective_scales=scales, objective_tolerance=objective_tolerance,
@@ -839,7 +869,9 @@ def api_export_lunarzone(
             data = chosen.to_dict()
             lz_json['_optimizer_meta'].update(derived_stats=data['derived_stats'],
                 calculation_provenance=data['calculation_provenance'], objective=chosen.objective_config,
-                constraints=dict(minimum=mins, maximum=maxs), scenario=dict(conservative=conservative, stock_only=stock_only))
+                constraints=dict(minimum=mins, maximum=maxs),
+                scenario=dict(conservative=(unknown_mode == 'minimum'), unknown_percent=unknown_mode,
+                              stock_only=stock_only))
         lz_json['_optimizer_meta']['physical_items'] = [dict(auction_lot_id=o.auction_lot_id,
             physical_id=o.physical_id, price=o.buyout_price, bonus_ids=o.unlocked_bonus_ids) for o in chosen.artifacts]
     return {

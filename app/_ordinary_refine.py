@@ -18,7 +18,9 @@ def refine_incumbent(profiles, incumbent, budget, minimum, maximum, carry,
     from ._survivability import requested
     if (objective.mode not in ('balanced', 'lexicographic')
             or requested(priorities, minimum, maximum)
-            or request.get('conservative') or request.get('guaranteed_carryable')):
+            or request.get('conservative')
+            or request.get('unknown_percent') in ('minimum', 'midpoint')
+            or request.get('guaranteed_carryable')):
         return None, []
     deadline = time.monotonic() + MAX_SECONDS
     best = incumbent

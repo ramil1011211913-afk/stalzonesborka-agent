@@ -116,7 +116,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="form-group"><label>Дубликаты</label><select id="allowDuplicates"><option value="0" selected>Запретить</option><option value="1">Разрешить</option></select></div>
 <div class="form-group"><label><input type="checkbox" id="stockOnlyToggle"> Только стоковые артефакты</label><small>Использовать для сборки только артефакты без заточки (+0)</small></div>
 <div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0">Макс. стат</label><label class="switch"><input type="checkbox" id="maxStatToggle"><span class="slider"></span></label></div>
-<div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0;font-size:.8em" title="Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам">Гарант. мин.</label><label class="switch"><input type="checkbox" id="conservativeToggle" onchange="updateQualityConservativeHint()"><span class="slider"></span></label></div>
+<div class="form-group" style="min-width:190px"><label title="Известный процент лота сохраняется; выбранная точка диапазона применяется только к неизвестным процентам">Процент неизвестных лотов</label><select id="unknownPercentMode" onchange="updateQualityConservativeHint()"><option value="minimum">Гарант. минимум</option><option value="midpoint" selected>Ожидаемо (середина)</option><option value="maximum">Максимум тира</option></select><small>Гарантия / ожидаемая оценка / оптимистичный потолок.</small></div>
 <div class="form-group" id="qualityDeepField" hidden><label><input type="checkbox" id="qualityDeep" onchange="updateQualityConservativeHint()" disabled> Глубокая оптимизация — 300 секунд</label><small>Общий бюджет поиска; OPTIMAL не гарантируется.</small></div>
 <div class="form-group" id="primaryOnlyField" hidden><label><input type="checkbox" id="primaryOnly" onchange="if(this.checked)document.getElementById('tolerance').value='0'" disabled> Максимум EHP без минимизации цены</label><small>Только Deep и единственный приоритет EHP. Допуск бюджета 0%; цена ограничена бюджетом; минимальная цена не оптимизируется.</small></div>
 <button class="btn" id="buildBtn">Подобрать</button>
@@ -178,9 +178,14 @@ function updateQualityConservativeHint() {
     document.getElementById('primaryOnlyField').hidden = !isQuality;
     document.getElementById('primaryOnly').disabled = !primaryAllowed;
     if (!primaryAllowed) document.getElementById('primaryOnly').checked = false;
-    document.getElementById('qualityConservativeHint').hidden = !(
-        document.getElementById('objectiveMode').value === 'max_quality' &&
-        document.getElementById('conservativeToggle').checked);
+    const percentMode = document.getElementById('unknownPercentMode').value;
+    const percentHint = document.getElementById('qualityConservativeHint');
+    percentHint.hidden = percentMode === 'maximum';
+    if (percentMode === 'minimum') {
+        percentHint.textContent = 'Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.';
+    } else if (percentMode === 'midpoint') {
+        percentHint.textContent = 'Известный процент лота сохраняется; для неизвестных процентов берётся середина диапазона качества как ожидаемая оценка. Фактический ролл может быть ниже; это не гарантия.';
+    }
 }
 let allStats = {};
 let containers = [];
@@ -722,7 +727,7 @@ async function findBuilds() {
         }
         params.append('priority_order', JSON.stringify(lexOrder));
     }
-    if (document.getElementById('conservativeToggle').checked) params.append('conservative', '1');
+    params.append('unknown_percent', document.getElementById('unknownPercentMode').value);
     // Exclude: merge UI excludes + template-mode artifact restriction
     const _allExclude = [...(window._excludeIds || []), ...(window._templateExcludeIds || [])];
     const _uniqExclude = [...new Set(_allExclude)];
@@ -927,6 +932,9 @@ async function findBuilds() {
                 let pctHtml = '';
                 if (a.recommended_percent) {
                     pctHtml = `<div class="ptn" style="color:#53c353" title="Рекомендуемый процент для ролла">≈${escapeHtml(a.recommended_percent)}% (ролл)</div>`;
+                } else if (a.art_percent_known === false && a.unknown_percent_range) {
+                    const pr = a.unknown_percent_range;
+                    pctHtml = `<div class="ptn" style="color:#f0a050" title="Процент неизвестен; показан диапазон тира">${a.ptn === 0 ? '≈' : ''}${escapeHtml(a.art_percent)}% <span style="color:#888;font-size:.85em">(${escapeHtml(pr.min)}–${escapeHtml(pr.max)}%)</span></div>`;
                 } else {
                     pctHtml = `<div class="ptn" style="color:#f0a050">${a.ptn === 0 ? '≈' : ''}${escapeHtml(a.art_percent)}%</div>`;
                 }
@@ -1181,8 +1189,12 @@ async function applyParseResult(d, btn, promptText) {
     if (d.container_id) {
         document.getElementById('containerId').value = d.container_id;
     }
-    if (d.conservative !== undefined) {
-        document.getElementById('conservativeToggle').checked = d.conservative;
+    if (d.unknown_percent !== undefined) {
+        document.getElementById('unknownPercentMode').value = d.unknown_percent;
+    } else if (d.conservative !== undefined) {
+        document.getElementById('unknownPercentMode').value = d.conservative ? 'minimum' : 'midpoint';
+    }
+    if (d.unknown_percent !== undefined || d.conservative !== undefined) {
         updateQualityConservativeHint();
     }
     if (d.stock_only !== undefined) {
@@ -1363,7 +1375,7 @@ function showArtifactStats(buildIdx, artIdx) {
             <div style="color:#e94560;font-weight:bold">${escapeHtml(a.name_ru)}</div>
             <span style="cursor:pointer;color:#888;font-size:1.2em" onclick="document.getElementById('pricePopup').style.display='none'">✕</span>
         </div>
-        <div style="font-size:.8em;color:#666;margin-bottom:6px">${escapeHtml(a.quality_name)} | ptn=${a.ptn} | ${a.art_percent}% | ${a.is_owned ? 'В ХРАН' : a.buyout_price.toLocaleString('ru') + ' ₽'}</div>
+        <div style="font-size:.8em;color:#666;margin-bottom:6px">${escapeHtml(a.quality_name)} | ptn=${a.ptn} | ${a.art_percent}%${a.art_percent_known === false && a.unknown_percent_range ? ` (${a.unknown_percent_range.min}–${a.unknown_percent_range.max}%)` : ''} | ${a.is_owned ? 'В ХРАН' : a.buyout_price.toLocaleString('ru') + ' ₽'}</div>
         <table style="width:100%">
             <thead><tr><th style="text-align:left;color:#666;font-size:.8em">Стат</th><th style="color:#666;font-size:.8em">Значение</th><th style="color:#666;font-size:.8em">Вклад</th></tr></thead>
             <tbody>${rows}</tbody>
@@ -1507,6 +1519,7 @@ function displayBudgetSweep(data) {
     document.getElementById('results').innerHTML = html;
 }
 // --- FIX: Add error handling to async init functions ---
+updateQualityConservativeHint();
 loadStats().catch(err => console.error('loadStats failed:', err));
 loadContainers().catch(err => console.error('loadContainers failed:', err));
 loadArtefacts().catch(err => console.error('loadArtefacts failed:', err));
