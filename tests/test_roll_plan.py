@@ -4,7 +4,10 @@ The planner changes only unknown quality percentages.  Known auction rolls are
 facts and must remain byte-for-byte unchanged, while a target roll is expressed
 in hundredths (``120.47``), matching the game's roll granularity.
 """
+import json
 import math
+import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
@@ -53,6 +56,51 @@ def container():
             "total_speed": {"value": 6.2, "name_ru": "Общая скорость"},
         },
     )
+
+
+def plain_container(slots=2):
+    return b.ContainerOption(
+        item_id="plain", name_ru="Plain", name_en="Plain",
+        item_type="backpacks", slots=slots, buyout_price=0,
+        inner_protection=0.0, effectiveness=100.0, bonus_stats={},
+    )
+
+
+def artifact(item_id, lot_id, base, *, percent=145.0, quality=3,
+             qlt_min=130, ptn=0, price=1_000_000):
+    stats, raw, names, _ = b.compute_artifact_stats(
+        base, [], [], percent, ptn, qlt_min, 15, None, 0, 100)
+    return b.ArtifactOption(
+        item_id=item_id, name_ru=item_id, name_en=item_id,
+        subcategory="", quality=quality, quality_name="",
+        art_percent=percent, buyout_price=price, ptn=ptn,
+        stats=stats, stats_raw=raw, stats_names=names,
+        unlocked_bonus_ids=[], base_stats=base, bonus_stats=[],
+        stats_random=None, art_percent_known=False, auction_lot_id=lot_id,
+    )
+
+
+def speed_source(lot_id, percent=145.0, contamination=None, health=False):
+    base = [{"prop_id": "speed_modifier", "min": 1.0, "max": 1.0,
+             "is_positive": True}]
+    if contamination is not None:
+        low, high = contamination
+        base.append({"prop_id": "radiation_accumulation", "min": low, "max": high,
+                     "is_positive": False})
+    if health:
+        base.append({"prop_id": "health_bonus", "min": 1.0, "max": 1.0,
+                     "is_positive": True})
+    return artifact("speed", lot_id, base, percent=percent)
+
+
+def counter_artifact(lot_id, percent=145.0):
+    return artifact("counter", lot_id, [
+        {"prop_id": "max_weight_bonus", "min": 8.0, "max": 10.0, "is_positive": True},
+        {"prop_id": "stamina_regeneration_bonus", "min": 1.0, "max": 2.0,
+         "is_positive": True},
+        {"prop_id": "radiation_accumulation", "min": -30.0, "max": -25.0,
+         "is_positive": True},
+    ], percent=percent)
 
 
 def speed_objective():
@@ -117,6 +165,119 @@ def test_without_carry_constraint_rolls_stay_at_maximum():
     assert result.feasible
     assert result.percents == (130.0, 130.0)
     assert not result.carryable
+
+
+def test_feasible_set_keeps_zero_objective_counter_at_maximum():
+    """A tied counter-artifact must not be rolled down just to fill the gap.
+
+    The counter-artifact has no speed contribution, so the primary objective is
+    indifferent to it.  The tie-break must still prefer the maximum roll: the
+    minimum max-weight threshold is already satisfied at the baseline.
+    """
+    speed = speed_source(10)
+    counter = counter_artifact(11)
+    result = plan.solve(
+        [speed, counter], plain_container(), speed_objective(),
+        minimum={"max_weight_bonus": 14.0}, carry=True)
+    assert result.feasible
+    assert result.carryable
+    assert result.percents == (145.0, 145.0)
+    assert not any(choice.changed for choice in result.choices)
+    assert result.objective_value == pytest.approx(result.baseline_objective)
+    assert result.stats["max_weight_bonus"] == pytest.approx(14.5)
+
+
+def test_lexicographic_tie_keeps_zero_objective_counter_at_maximum():
+    speed = speed_source(20, health=True)
+    counter = counter_artifact(21)
+    objective = Objective.create(
+        {"total_speed": 10, "health_bonus": 5},
+        mode="lexicographic", order=["total_speed", "health_bonus"])
+    result = plan.solve(
+        [speed, counter], plain_container(), objective,
+        minimum={"max_weight_bonus": 14.0}, carry=True)
+    assert result.feasible
+    assert result.carryable
+    assert result.percents == (145.0, 145.0)
+    assert not any(choice.changed for choice in result.choices)
+
+
+def test_contamination_source_is_rolled_down_before_counter_artifact():
+    """When the baseline exceeds a danger limit, lower the source, not the counter."""
+    speed = speed_source(30, contamination=(50.0, 55.0))
+    counter = counter_artifact(31)
+    result = plan.solve(
+        [speed, counter], plain_container(), speed_objective(),
+        minimum={"max_weight_bonus": 14.0}, carry=True)
+    assert result.feasible
+    assert result.carryable
+    assert result.percents[0] < 145.0
+    assert result.percents[1] == 145.0
+    assert result.stats["radiation_accumulation"] <= 10.0 + 1e-9
+    assert result.stats["max_weight_bonus"] == pytest.approx(14.5)
+
+
+def counter_market(monkeypatch, tmp_path):
+    """Two-slot market: a speed source and a tied counter-artifact."""
+    path = tmp_path / 'counter.db'
+    speed = [{"prop_id": "speed_modifier", "min": 1.0, "max": 1.0,
+              "is_positive": True}]
+    counter = [
+        {"prop_id": "max_weight_bonus", "min": 8.0, "max": 10.0,
+         "is_positive": True},
+        {"prop_id": "stamina_regeneration_bonus", "min": 1.0, "max": 2.0,
+         "is_positive": True},
+        {"prop_id": "radiation_accumulation", "min": -30.0, "max": -25.0,
+         "is_positive": True},
+    ]
+    with sqlite3.connect(path) as c:
+        c.executescript('''
+        CREATE TABLE artefacts(id TEXT PRIMARY KEY,name_ru TEXT,name_en TEXT,subcategory TEXT,
+          stats TEXT,bonus_stats TEXT,icon_url TEXT);
+        CREATE TABLE auction_history(item_id TEXT,quality INTEGER,price INTEGER,region TEXT);
+        CREATE TABLE auction_lots(id INTEGER PRIMARY KEY,item_id TEXT,region TEXT,
+          buyout_price INTEGER,quality INTEGER,ptn INTEGER,art_percent REAL,stats_random REAL,
+          bonus_properties TEXT,end_time TEXT,additional_raw TEXT,amount INTEGER);
+        ''')
+        c.execute('INSERT INTO artefacts VALUES(?,?,?,?,?,?,?)',
+                  ('speed', 'Speed', 'Speed', '', json.dumps(speed), '[]', ''))
+        c.execute('INSERT INTO artefacts VALUES(?,?,?,?,?,?,?)',
+                  ('counter', 'Counter', 'Counter', '', json.dumps(counter), '[]', ''))
+        for lot_id, item in ((1, 'speed'), (2, 'counter')):
+            c.execute('INSERT INTO auction_lots VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (lot_id, item, 'EU', 1_000_000, 3, 0, 145.0, 0.0, '[]',
+                       '2099-01-01T00:00:00Z', json.dumps({'qlt': 3, 'ptn': 0}), 1))
+        c.commit()
+
+    @contextmanager
+    def connect():
+        c = sqlite3.connect(path)
+        c.row_factory = sqlite3.Row
+        try:
+            yield c
+        finally:
+            c.close()
+
+    monkeypatch.setattr(b, 'get_connection', connect)
+    monkeypatch.setattr(b, 'load_container_options',
+                        lambda region: [plain_container()])
+    return path
+
+
+def test_max_quality_keeps_feasible_counter_at_maximum(monkeypatch, tmp_path):
+    from tests.test_max_quality import call
+    counter_market(monkeypatch, tmp_path)
+    result = call(
+        budget=10_000_000, priorities={'total_speed': 10},
+        min_thresholds={'max_weight_bonus': 14.0},
+        carryable_only=True, roll_optimize=True)
+    assert result and result.search_status['state'] == 'OPTIMAL', result.search_status
+    build = result[0]
+    by_item = {artifact.item_id: artifact for artifact in build.artifacts}
+    assert by_item['speed'].art_percent == 145.0
+    assert by_item['counter'].art_percent == 145.0
+    assert build.combined_stats['max_weight_bonus'] == pytest.approx(14.5)
+    assert build.roll_plan_search['changed'] is False
 
 
 def test_max_threshold_is_enforced_by_plan():

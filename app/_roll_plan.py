@@ -437,7 +437,9 @@ def solve(artifacts, container, objective, minimum=None, maximum=None,
             model["rows"].append(row)
             model["lower"].append(best - FEAS_TOL)
             model["upper"].append(math.inf)
-            status2, values2, _, message2 = _solve_milp([-1.0] * model["n"], model, deadline)
+            # ``_solve_milp`` negates its objective for the minimizer, so a
+            # positive vector maximizes the sum of the hundredth variables.
+            status2, values2, _, message2 = _solve_milp([1.0] * model["n"], model, deadline)
             if values2 is not None:
                 values, status, message = values2, status2, message2
         status_text = "optimal" if status == 0 else "feasible"
@@ -458,7 +460,8 @@ def solve(artifacts, container, objective, minimum=None, maximum=None,
                             baseline_value, status, message)
             best_full = sign * const + best
             _add_expr_constraint(model, key, sign, best_full)
-        status2, values2, _, message2 = _solve_milp([-1.0] * model["n"], model, deadline)
+        # Same tie-break: ``_solve_milp`` negates, so +1 maximizes the roll sum.
+        status2, values2, _, message2 = _solve_milp([1.0] * model["n"], model, deadline)
         if values2 is not None:
             values, status, message = values2, status2, message2
         status_text = "optimal" if status == 0 else "feasible"
