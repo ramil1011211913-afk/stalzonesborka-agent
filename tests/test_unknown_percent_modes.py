@@ -223,6 +223,15 @@ def test_ordinary_known_roll_preserved_in_every_mode(monkeypatch, tmp_path):
         assert result[0].combined_stats[SPEED] == pytest.approx(KNOWN_SPEED)
 
 
+def test_ui_exposes_midpoint_default_and_full_range():
+    from pathlib import Path
+    html = (Path(b.__file__).parent / 'templates/index.html').read_text(encoding='utf8')
+    assert 'id="unknownPercentMode"' in html
+    assert '<option value="midpoint" selected>' in html
+    assert 'pr.maximum' in html
+    assert 'a.unknown_percent_range.maximum' in html
+
+
 def test_api_forwards_unknown_mode_and_keeps_historical_default(monkeypatch, tmp_path):
     main, client = api(monkeypatch, tmp_path)
     seen = []
