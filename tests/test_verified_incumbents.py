@@ -31,19 +31,29 @@ def conservative_market(monkeypatch,tmp_path):
     return path
 
 
-def test_ordinary_conservative_keeps_physical_descriptor(conservative_market):
+def test_ordinary_conservative_keeps_known_physical_descriptor(conservative_market):
     view=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)[0]
-    assert view.art_percent==115
-    assert source(view).art_percent==127.5
-    assert source(view) is not view
-    assert view.stats['speed_modifier']==11.5
+    assert view.art_percent==127.5
+    assert source(view) is view
+    assert view.stats['speed_modifier']==12.75
 
 
-def test_ordinary_conservative_can_purchase_a_real_view(conservative_market):
+def test_ordinary_conservative_can_purchase_a_known_real_lot(conservative_market):
     result=b.build_artifact_sets(10,tolerance_pct=0,priorities={'speed_modifier':10},region='EU',conservative=True)
-    assert result and result[0].combined_stats['speed_modifier']==11.5
+    assert result and result[0].combined_stats['speed_modifier']==12.75
     assert result[0].total_price==5
     assert source(result[0].artifacts[0]).art_percent==127.5
+
+
+def test_ordinary_conservative_minimizes_only_unknown_stored_percent(conservative_market):
+    with sqlite3.connect(conservative_market) as c:
+        c.execute('UPDATE auction_lots SET art_percent=NULL, stats_random=NULL')
+    view=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)[0]
+    assert view.art_percent==115 and view.stats['speed_modifier']==11.5
+    assert source(view).art_percent==130
+    result=b.build_artifact_sets(10,tolerance_pct=0,priorities={'speed_modifier':10},region='EU',conservative=True)
+    assert result and result[0].combined_stats['speed_modifier']==11.5
+    assert source(result[0].artifacts[0]).art_percent==130
 
 
 @pytest.mark.parametrize('field,value',[('buyout_price',6),('art_percent',128),('stats_random',1),('quality',3),('ptn',1),('bonus_properties','["SPEED_MOD"]'),('region','NA'),('end_time','2000-01-01T00:00:00Z')])
@@ -73,7 +83,7 @@ def test_two_equal_price_real_copies_survive_conservative_views(monkeypatch,cons
     options=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)
     assert {source(o).auction_lot_id for o in options}=={1,2}
     builds=b.build_artifact_sets(10,tolerance_pct=0,priorities={'speed_modifier':10},region='EU',conservative=True,allow_duplicates=True)
-    assert builds and builds[0].combined_stats['speed_modifier']==23.
+    assert builds and builds[0].combined_stats['speed_modifier']==25.5
     assert len({o.auction_lot_id for o in builds[0].artifacts})==2
     assert not b.build_artifact_sets(10,tolerance_pct=0,priorities={'speed_modifier':10},region='EU',conservative=True,allow_duplicates=False)
 

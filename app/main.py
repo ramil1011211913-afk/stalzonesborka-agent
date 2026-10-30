@@ -182,7 +182,7 @@ def api_builds(
     carryable_only: bool = Query(True, description="Filter to carryable builds only"),
     allow_duplicates: bool = Query(False, description="Allow same item_id multiple times"),
     min_budget: bool = Query(False, description="Minimize price subject to constraints; budget=0 removes the cap"),
-    conservative: bool = Query(False, description="Calculate stats at minimum quality % (worst case)"),
+    conservative: bool = Query(False, description="Calculate unknown quality percentages at tier minimum; known lot percentages stay actual"),
     guaranteed_carryable: bool = Query(False, description="Only builds carryable at MAX art% of tier"),
     exclude: str | None = Query(None, description='JSON: ["y5ro"] — item_ids to exclude from builds'),
     prompt_text: str | None = Query(None, description="Original natural language prompt from AI parser"),
@@ -250,6 +250,7 @@ def api_builds(
     # Validate owned artifact art_percent range — default to quality tier max if 0/missing
     for oa in owned_list:
         ap = oa.get("art_percent", 0)
+        oa["_art_percent_known"] = isinstance(ap, (int, float)) and ap != 0
         if not isinstance(ap, (int, float)) or ap == 0:
             # Default: max of quality tier
             from .api_client import QUALITY_RANGES
@@ -414,7 +415,9 @@ async def api_all_stats():
                 seen[pid] = s.get("name_ru", pid)
     conn.close()
     from ._survivability import REGISTRY
+    from ._derived_stats import NAMES as DERIVED_NAMES
     seen.update({k:v[0] for k,v in REGISTRY.items()})
+    seen.update(DERIVED_NAMES)
     return {"stats": seen}
 
 REFRESH_LEASE_SECONDS = DEFAULT_LEASE_SECONDS
@@ -480,6 +483,7 @@ async def parse_prompt(body: dict = None):
                   "container_id": None, "budget": 0}
 
         stat_keywords = [
+            ("total_speed", ["общая скорость", "общую скорость", "общей скорости", "total speed"]),
             ("bullet_dmg_factor", ["пулестойкость", "пулестой", "пулестойк", "пуля", "bullet"]),
             ("health_bonus", ["живучесть", "здоровье", "health", "хп"]),
             ("max_weight_bonus", ["переносимый вес", "переносимый", "вес", "weight"]),
@@ -489,6 +493,8 @@ async def parse_prompt(body: dict = None):
             ("stopping_protection", ["стойкость", "stopping", "стоп"]),
         ]
         for stat_id, keywords in stat_keywords:
+            if stat_id == "speed_modifier" and "total_speed" in result["priorities"]:
+                continue
             for kw in keywords:
                 if kw in t:
                     result["priorities"][stat_id] = 10
@@ -545,7 +551,7 @@ async def parse_prompt(body: dict = None):
             if "health_bonus" not in result["priorities"]:
                 result["priorities"]["health_bonus"] = 8
         # "бегать быстро" → speed emphasis
-        if "бегать" in t and ("скор" in t or "быстр" in t):
+        if "бегать" in t and ("скор" in t or "быстр" in t) and "total_speed" not in result["priorities"]:
             result["priorities"]["speed_modifier"] = 10
             result["priorities"]["sprint_speed_modifier"] = 7
         # "не ловить радиацию" → max threshold
@@ -638,10 +644,11 @@ async def parse_prompt(body: dict = None):
  exclude: пустой массив [] если нет исключений, иначе массив item_id.
 
 Правила: пулестой→bullet_dmg_factor, живучесть→health_bonus, вес→max_weight_bonus,
-скорость→speed_modifier, выносливость→stamina_bonus, стойкость→stopping_protection.
+скорость→speed_modifier, общая скорость→total_speed (speed_modifier + sprint_speed_modifier),
+выносливость→stamina_bonus, стойкость→stopping_protection.
 50млн/50кк→50000000. бочонок→rgoz.
-"Гарант. мин." / "гарантированный минимум" / "без перекрута" → conservative:true (считать статы по минимальному % качества — гарантированные значения, которые 100% будут).
-conservative означает: статы считаются по минимальному % качества (worst case), а не по фактическому % лота.
+"Гарант. мин." / "гарантированный минимум" / "без перекрута" → conservative:true.
+conservative означает: известный процент лота сохраняется, а минимальный процент качества применяется только к неизвестным процентам.
 от X до Y кг→min+max thresholds (НЕ conservative — это ограничение диапазона, separate feature).
 ВАЖНО: если указан диапазон (от/до) для стата — поставь ему приоритет 2-3, не 0 и не 10.
 Приоритет 0 = стат не попадёт в пул кандидатов, оптимизатор не найдёт артефакты.

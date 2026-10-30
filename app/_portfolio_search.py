@@ -31,6 +31,8 @@ def _check_limit(value):
 
 
 def _completed_stats(candidates, indices, protection, bonuses, objective, minimum, maximum):
+    from ._derived_stats import augment_bonus_stats, value as stat_value
+    bonuses = augment_bonus_stats(dict(bonuses or {}))
     keys = set(bonuses) | set(objective.keys) | set(minimum) | set(maximum)
     for candidate in candidates:
         keys.update(candidate.stats)
@@ -38,7 +40,7 @@ def _completed_stats(candidates, indices, protection, bonuses, objective, minimu
     if 'stopping_protection' in keys:
         keys.add('tear_dmg_factor')
     keys = list(beam._DANGER_KEYS) + sorted(keys - set(beam._DANGER_KEYS))
-    raw = np.array([[c.stats.get(key, 0) for key in keys] for c in candidates], dtype=float)
+    raw = np.array([[stat_value(c.stats, key) for key in keys] for c in candidates], dtype=float)
     summed = raw[indices].sum(axis=1)
     bkeys = list(bonuses)
     final = beam._final_stats(summed, protection,

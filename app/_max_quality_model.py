@@ -34,6 +34,7 @@ def descriptor_supported(option):
 
 def make_model(candidates, container, objective, budget, minimum, maximum, duplicates, carry):
     from ._survivability import requested, make_model as derived_model
+    from ._derived_stats import DERIVED_STATS, augment_bonus_stats, value as stat_value
     if requested(dict(zip(objective.keys, objective.weights)), minimum, maximum):
         try:
             return derived_model(candidates, container, objective, budget, minimum, maximum, duplicates, carry)
@@ -53,13 +54,15 @@ def make_model(candidates, container, objective, budget, minimum, maximum, dupli
         raise Unsupported('priority_or_constraint_limit')
     if objective.mode == 'lexicographic' and not 1e-8 <= objective.tolerance <= 1:
         raise Unsupported('unsupported_numeric_tolerance')
-    known = set(ARMOR_ADDITIVE_KEYS) | {k for o in candidates for k in o.stats}
+    known = (set(ARMOR_ADDITIVE_KEYS) | set(DERIVED_STATS)
+             | {k for o in candidates for k in o.stats})
     if any(k not in known or k == 'stopping_protection' or k.startswith('__') for k in keys):
         raise Unsupported('unsupported_or_derived_stat')
     if protection != 1 and any(k in DANGERS[:4] for k in objective.keys):
         raise Unsupported('nonlinear_protected_accumulation_objective')
     bonuses = {k: v.get('value', 0) if isinstance(v, dict) else v
                for k, v in container.bonus_stats.items()}
+    augment_bonus_stats(bonuses)
     if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in bonuses.values()):
         raise Unsupported('nonfinite_bonus')
     prices = [o.buyout_price for o in candidates]
@@ -86,11 +89,11 @@ def make_model(candidates, container, objective, budget, minimum, maximum, dupli
                     if target > 0:
                         row([0.] * n, 1., None)
                     else:
-                        row([o.stats.get(key, 0.) for o in candidates], 0., None)
+                        row([stat_value(o.stats, key) for o in candidates], 0., None)
                 return
             if target > 0:
                 target /= protection
-        row([o.stats.get(key, 0.) for o in candidates], target if lower else None,
+        row([stat_value(o.stats, key) for o in candidates], target if lower else None,
             None if lower else target)
 
     row([1.] * n, container.slots, container.slots)
@@ -108,12 +111,12 @@ def make_model(candidates, container, objective, budget, minimum, maximum, dupli
             values[i] = 1.
         row(values, None, 1.)
     if objective.mode == 'balanced':
-        goals = [[sum(o.stats.get(k, 0.) * c for k, c in zip(objective.keys, objective.coefficients))
+        goals = [[sum(stat_value(o.stats, k) * c for k, c in zip(objective.keys, objective.coefficients))
                   for o in candidates]]
         constants = [sum(bonuses.get(k, 0.) * c for k, c in zip(objective.keys, objective.coefficients))]
     else:
         from ._objective import direction
-        goals = [[direction(k) * o.stats.get(k, 0.) for o in candidates] for k in objective.order]
+        goals = [[direction(k) * stat_value(o.stats, k) for o in candidates] for k in objective.order]
         constants = [direction(k) * bonuses.get(k, 0.) for k in objective.order]
     if any(not math.isfinite(v) or abs(v) > 1e8 for values in goals for v in values):
         raise Unsupported('nonfinite_objective')

@@ -84,6 +84,7 @@ def normalized_objective(objective, profiles, overrides=None):
 def make_model(candidates,container,objective,budget,minimum,maximum,duplicates,carry):
     from . import _max_quality_model as mm
     from ._objective import Objective
+    from ._derived_stats import augment_bonus_stats, value as stat_value
     from ._survivability_circuit import Circuit
     if objective.mode!='balanced': raise mm.Unsupported('unsupported_survivability_lexicographic')
     if len(objective.keys)>8 or len(set(objective.keys)|set(minimum)|set(maximum))>128:
@@ -96,6 +97,7 @@ def make_model(candidates,container,objective,budget,minimum,maximum,duplicates,
         {k:v for k,v in minimum.items() if k not in REGISTRY},
         {k:v for k,v in maximum.items() if k not in REGISTRY},duplicates,carry)
     bonus={k:v.get('value',0) if isinstance(v,dict) else v for k,v in container.bonus_stats.items()}
+    augment_bonus_stats(bonus)
     options=[dict(stats=o.stats,buyout_price=o.buyout_price) for o in candidates]
     rows=[dict(values=[[i,v] for i,v in enumerate(r['values']) if v],lo=r['lo'],hi=r['hi']) for r in old['rows']]
     c=Circuit(options,container.slots,bonus,rows)
@@ -111,7 +113,7 @@ def make_model(candidates,container,objective,budget,minimum,maximum,duplicates,
             j=ids[REGISTRY[key][2]];goal[j]=goal.get(j,0)+a
         else:
             constant+=bonus.get(key,0)*a
-            for i,o in enumerate(candidates):goal[i]=goal.get(i,0)+o.stats.get(key,0)*a
+            for i,o in enumerate(candidates):goal[i]=goal.get(i,0)+stat_value(o.stats,key)*a
     nonzeros=sum(len(r['values']) for r in c.rows)
     if any(not math.isfinite(v) or abs(v)>1e8 for v in goal.values()) or not math.isfinite(constant):
         raise mm.Unsupported('nonfinite_objective')

@@ -87,11 +87,18 @@ def current_candidates(candidates, connection, region, normalize=lambda x: x, *,
             bonuses = _json(r['bonus_properties'])
             if not isinstance(bonuses, list) or any(not isinstance(x, str) for x in bonuses):
                 continue
+            stored_percent = r['art_percent']
+            if stored_percent in (None, 0):
+                # An unknown stored percentage is a fact, not a zero stat.
+                if getattr(o, 'art_percent_known', True):
+                    continue
+            elif (not math.isfinite(stored_percent) or not 0 < stored_percent <= 190
+                    or stored_percent != o.art_percent):
+                continue
             if (r['item_id'] != o.item_id or r['buyout_price'] != o.buyout_price
                     or r['buyout_price'] <= 0 or r['quality'] != o.quality or r['ptn'] != o.ptn
                     or not 0 <= o.quality <= 5 or not 0 <= o.ptn <= 15
-                    or not math.isfinite(r['art_percent']) or not 0 < r['art_percent'] <= 190
-                    or r['art_percent'] != o.art_percent or r['stats_random'] != o.stats_random
+                    or r['stats_random'] != o.stats_random
                     or sorted(map(normalize, bonuses)) != sorted(map(normalize, o.unlocked_bonus_ids))):
                 continue
             if (o.ptn > 0 and not bonuses
@@ -126,6 +133,8 @@ def solve(candidates, slots, budget, protection, bonuses, minimum, maximum,
     except ImportError:
         return None, dict(info, reason='solver_unavailable')
     from ._physical_items import availability_groups
+    from ._derived_stats import augment_bonus_stats, value as stat_value
+    bonuses = augment_bonus_stats(dict(bonuses or {}))
     rr, cc, vv, lower, upper = [], [], [], [], []
 
     def row(values, lo, hi):
@@ -150,7 +159,7 @@ def solve(candidates, slots, budget, protection, bonuses, minimum, maximum,
                     return
             elif target > 0:
                 target /= protection
-        row(np.array([o.stats.get(key, 0) for o in candidates], dtype=float),
+        row(np.array([stat_value(o.stats, key) for o in candidates], dtype=float),
             target if is_min else -np.inf, np.inf if is_min else target)
 
     try:

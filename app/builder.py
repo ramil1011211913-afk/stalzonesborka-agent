@@ -541,6 +541,9 @@ def compute_artifact_stats(base_stats: list, bonus_stats: list, bonus_unlocked_i
 
     _process_stat_list(base_stats, is_bonus=False)
     _process_stat_list(bonus_stats, is_bonus=True)
+    from ._derived_stats import add_names, augment
+    augment(stats_raw)
+    add_names(stats_raw, stats_names)
 
     return dict(stats_raw), dict(stats_raw), stats_names, None
 
@@ -652,6 +655,7 @@ def _score_build(stats: dict, priorities: dict, stat_max: dict | None = None,
 
 
 def _fixed_objective_scales(options, containers, priorities):
+    from ._derived_stats import augment, augment_bonus_stats
     scales = {key: 1.0 for key, weight in priorities.items() if weight > 0}
     if not scales:
         return scales
@@ -665,9 +669,11 @@ def _fixed_objective_scales(options, containers, priorities):
                 container.inner_protection, container.effectiveness,
             )
             _recalculate_stopping_protection(stats)
+            augment(stats)
             rows.append(stats)
         bonuses = {key: value.get('value', 0) if isinstance(value, dict) else value
                    for key, value in container.bonus_stats.items()}
+        augment_bonus_stats(bonuses)
         if getattr(container, "_armor", None) is not None and "stopping_protection" in scales:
             normalized_bonus = dict(bonuses)
             if 100 + normalized_bonus.get("tear_dmg_factor", 0) != 0:
@@ -743,6 +749,7 @@ class ArtifactOption:
     bonus_stats: list = field(default_factory=list)
     stats_random: float | None = None
     recommended_percent: float | None = None
+    art_percent_known: bool = True
     is_owned: bool = False
     hist_avg_price: float = 0.0  # historical avg sold price for (item_id, quality)
     score: float = 0.0
@@ -920,6 +927,7 @@ def _armor_additions(armor):
 
 
 def _armor_containers(containers, armors):
+    from ._derived_stats import augment_bonus_stats
     result = []
     for base in containers:
         for armor in armors:
@@ -933,6 +941,7 @@ def _armor_containers(containers, armors):
                 previous = bonuses.get(key, 0)
                 previous = previous.get("value", 0) if isinstance(previous, dict) else previous
                 bonuses[key] = previous + value
+            augment_bonus_stats(bonuses)
             effective = replace(base, bonus_stats=bonuses)
             effective._base_container = base
             effective._armor = armor
@@ -946,6 +955,8 @@ def _without_armor(stats, armor):
         raw["stopping_protection"] = 100 - (100 - raw["stopping_protection"]) * (100 + raw.get("tear_dmg_factor", 0)) / 100
     for key, value in _armor_additions(armor).items():
         raw[key] = raw.get(key, 0) - value
+    from ._derived_stats import augment
+    augment(raw)
     if 'effective_health' in raw:
         from ._survivability import values
         raw.update(values(raw))
@@ -1141,6 +1152,9 @@ def apply_armor_to_builds(builds: list[ArtifactBuild], armor_id: str | None,
         for key, value in _armor_additions(armor).items():
             raw[key] = raw.get(key, 0) + value
         build.combined_stats = _recalculate_stopping_protection(raw)
+        from ._derived_stats import add_names, augment
+        augment(build.combined_stats)
+        add_names(build.combined_stats, build.combined_stats_names)
         build._armor = armor
         build.carryable, build.carryability_warnings = check_carryability(build.combined_stats)
         build.carryability_analysis = analyze_build_carryability(build)
@@ -1345,7 +1359,8 @@ def load_artifact_options(priorities: dict | None = None,
                              art["name_ru"], quality, price, _hist)
                     continue
             qr = QUALITY_RANGES.get(quality, QUALITY_RANGES[0])
-            if lot["art_percent"]:
+            art_percent_known = bool(lot["art_percent"])
+            if art_percent_known:
                 art_percent = lot["art_percent"]  # base from calc_art_percent(stats_random); ptn applied in _calc_stat_value via calc_ptn_bonus
             else:
                 art_percent = qr["min"] + qr["range"]
@@ -1396,6 +1411,7 @@ def load_artifact_options(priorities: dict | None = None,
                     base_stats=base_stats, bonus_stats=bonus_stats,
                     hist_avg_price=_hist,
                     stats_random=lot["stats_random"],
+                    art_percent_known=art_percent_known,
                     auction_lot_id=lot["auction_lot_id"] if "auction_lot_id" in lot.keys() else None,
                     physical_id=(f"auction:{region}:{lot['auction_lot_id']}"
                                  if "auction_lot_id" in lot.keys() else f"anonymous-row:{art_id}:{lot_index}"),
@@ -1412,6 +1428,7 @@ def load_artifact_options(priorities: dict | None = None,
 
 
 def load_container_options(region: str | None = None) -> list[ContainerOption]:
+    from ._derived_stats import augment_bonus_stats
     region = region or Config.REGION
     with get_connection() as conn:
         rows = conn.execute(
@@ -1431,6 +1448,7 @@ def load_container_options(region: str | None = None) -> list[ContainerOption]:
                 bonus = json.loads(c["bonus_stats"]) if c["bonus_stats"] else {}
             except (json.JSONDecodeError, TypeError):
                 bonus = {}
+            augment_bonus_stats(bonus)
             options.append(ContainerOption(
                 item_id=c["id"], name_ru=c["name_ru"], name_en=c["name_en"] if "name_en" in c.keys() else "",
                 item_type=c["item_type"], slots=c["slots"], buyout_price=price,
@@ -1682,6 +1700,10 @@ def build_artifact_sets(
                 bonus_stats = json.loads(art["bonus_stats"]) if art["bonus_stats"] else []
                 quality = oa.get("quality", 0)
                 ptn = oa.get("ptn", 0)
+                _known_default = ('art_percent' in oa
+                                  and isinstance(oa.get('art_percent'), (int, float))
+                                  and oa.get('art_percent') not in (None, 0))
+                art_percent_known = bool(oa.get('_art_percent_known', _known_default))
                 art_percent = oa.get("art_percent", QUALITY_RANGES.get(quality, QUALITY_RANGES[0])["min"])
                 bonus_ids = oa.get("bonus_ids", [])
                 if _quality_context is not None and (
@@ -1712,6 +1734,7 @@ def build_artifact_sets(
                     unlocked_bonus_ids=bonus_ids, icon_url=art["icon_url"],
                     base_stats=base_stats, bonus_stats=bonus_stats,
                     stats_random=None,
+                    art_percent_known=art_percent_known,
                     is_owned=True,
                     owned_instance_id=instance_id,
                     physical_id=physical_id,
@@ -1741,7 +1764,10 @@ def build_artifact_sets(
         _quality_context.update(objective=objective, budget=effective_budget, request=search_request,
                                 profiles=[], hidden_effects=_hidden_effects)
     for opt in options + owned_opts:
-        opt.score = objective.evaluate(opt.stats, opt.buyout_price)
+        # Max Quality keeps the physical descriptors immutable; its prepared
+        # views are scored later and never written back to the originals.
+        if _quality_context is None:
+            opt.score = objective.evaluate(opt.stats, opt.buyout_price)
     options.sort(key=lambda opt: -opt.score)
     if _quality_context is not None:
         # Stop before ALL Beam group/counter/ranking caps. Each full container
@@ -1764,7 +1790,7 @@ def build_artifact_sets(
                     container.inner_protection, container.effectiveness)
                 view = replace(o, stats=values, stats_raw=raw, stats_names=names,
                                recommended_percent=recommended)
-                if conservative:
+                if conservative and not getattr(o, 'art_percent_known', False):
                     view._quality_source = source(o)
                 profile.append(view)
             _quality_context['profiles'].append((container, sorted(profile, key=lambda o: (o.item_id, o.buyout_price))))
@@ -1935,6 +1961,7 @@ def build_artifact_sets(
                 base_stats=o.base_stats, bonus_stats=o.bonus_stats,
                 stats_random=o.stats_random, is_owned=o.is_owned, score=o.score,
                 hist_avg_price=o.hist_avg_price,
+                art_percent_known=o.art_percent_known,
                 auction_lot_id=o.auction_lot_id, owned_instance_id=o.owned_instance_id,
                 physical_id=o.physical_id,
             )
@@ -2163,6 +2190,9 @@ def build_artifact_sets(
                             combined_names[pid] = data.get("name_ru", pid) if isinstance(data, dict) else pid
                 _recalculate_stopping_protection(combined)
                 combined, _ = apply_reaction_bonuses(combined)
+                from ._derived_stats import add_names, augment
+                augment(combined)
+                add_names(combined, combined_names)
                 skip = False
                 for prop_id, min_val in (min_thresholds or {}).items():
                     if combined.get(prop_id, 0) < min_val:
@@ -2244,6 +2274,9 @@ def build_artifact_sets(
                 _recalculate_stopping_protection(combined)
                 # Apply reaction bonuses (JS applyReactionBonuses)
                 combined, _ = apply_reaction_bonuses(combined)
+                from ._derived_stats import add_names, augment
+                augment(combined)
+                add_names(combined, combined_names)
                 # Min/max thresholds
                 skip = False
                 for prop_id, min_val in (min_thresholds or {}).items():
@@ -2312,6 +2345,9 @@ def build_artifact_sets(
                                 combined_names[pid] = data.get("name_ru", pid) if isinstance(data, dict) else pid
                     _recalculate_stopping_protection(combined)
                     combined, _ = apply_reaction_bonuses(combined)
+                    from ._derived_stats import add_names, augment
+                    augment(combined)
+                    add_names(combined, combined_names)
                     skip = False
                     for prop_id, min_val in (min_thresholds or {}).items():
                         if combined.get(prop_id, 0) < min_val:
@@ -2557,6 +2593,9 @@ def _process_combo(combo, container, art_price, priorities, min_thresholds, all_
     _recalculate_stopping_protection(combined_stats)
     # Apply reaction bonuses (JS applyReactionBonuses)
     combined_stats, _ = apply_reaction_bonuses(combined_stats)
+    from ._derived_stats import add_names, augment
+    augment(combined_stats)
+    add_names(combined_stats, combined_names)
 
     # Derived metrics are opt-in; old combined_stats and payloads stay unchanged.
     from ._survivability import requested, values, REGISTRY

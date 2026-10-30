@@ -13,10 +13,18 @@ def source(option):
 
 
 def minimum_views(options, priorities):
+    """Use the tier minimum only where the physical percentage is unknown.
+
+    Auction lots and owned instances with a stored percentage keep that exact
+    percentage; replacing it would lower known items below their real stats.
+    """
     from . import builder as b
     result = []
     for original in options:
         physical = source(original)
+        if getattr(physical, 'art_percent_known', False):
+            result.append(original)
+            continue
         qr = b.QUALITY_RANGES.get(physical.quality)
         if qr is None:
             # Capability checking must reject unsupported tiers, not coerce them.
@@ -53,5 +61,6 @@ def physical_digest(options):
 def metadata():
     return dict(mode='minimum_quality_point_scenario', conservative=True,
                 robust=False, guaranteed_carryability_implied=False,
-                percentage_scope='quality_minimum_for_all_candidates',
-                message='Расчёт при минимальном проценте качества. Не является гарантией характеристик и носимости при всех возможных процентах.')
+                percentage_scope='quality_minimum_for_unknown_candidates',
+                known_percent_preserved=True,
+                message='Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.')

@@ -180,6 +180,8 @@ def _search_impl(candidates, k, budget, max_counter, prot_mult,
         priorities, stat_max, "min_budget" if min_budget else optimization_mode,
         priority_order, objective_tolerance,
     )
+    from ._derived_stats import augment_bonus_stats, value as stat_value
+    cont_bonus_dict = augment_bonus_stats(dict(cont_bonus_dict or {}))
     min_budget = objective.mode == "min_budget"
     _danger_lookahead = (
         danger_lookahead
@@ -218,8 +220,7 @@ def _search_impl(candidates, k, budget, max_counter, prot_mult,
     w_mx = np.zeros((n, 0), dtype=np.float64)
     for i, opt in enumerate(candidates):
         for j, key in enumerate(stat_keys):
-            val = opt.stats.get(key, 0.0)
-            raw_mx[i, j] = val
+            raw_mx[i, j] = stat_value(opt.stats, key)
 
     from ._danger_lookahead import build_reduction_table
 

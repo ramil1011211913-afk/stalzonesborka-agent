@@ -22,6 +22,7 @@ def real_market(monkeypatch, tmp_path, rows=None, slots=1):
         opt.quality = 2
         opt.art_percent = 127.5
         opt.stats_random = 1.3333333333
+        opt.art_percent_known = True
         opt.base_stats = [dict(prop_id=k, min=v*.85, max=v, is_positive=not k.endswith('_accumulation'))
                           for k,v in opt.stats.items()]
         opt.stats, opt.stats_raw, opt.stats_names, _ = REAL_COMPUTE(
@@ -33,23 +34,29 @@ def real_market(monkeypatch, tmp_path, rows=None, slots=1):
 
 @pytest.mark.parametrize('mode', ['balanced', 'lexicographic'])
 @pytest.mark.parametrize('known', [False, True])
-def test_conservative_known_and_missing_percent_use_scenario_not_source(monkeypatch,tmp_path,mode,known):
+def test_conservative_known_percent_preserved_and_unknown_minimized(monkeypatch,tmp_path,mode,known):
     opts,path,_=real_market(monkeypatch,tmp_path)
     if not known:
-        opts[0].art_percent=130;opts[0].stats_random=0
+        opts[0].art_percent=130;opts[0].stats_random=0;opts[0].art_percent_known=False
         with sqlite3.connect(path) as c:c.execute('update auction_lots set art_percent=130, stats_random=0')
     before=copy.deepcopy(dataclasses.asdict(opts[0]))
     result=call(conservative=True,priorities={'sprint_speed_modifier':10},optimization_mode=mode,
                 priority_order=['sprint_speed_modifier'] if mode=='lexicographic' else None)
     assert result and result.search_status['state']=='OPTIMAL',result.search_status
-    assert result[0].combined_stats['sprint_speed_modifier']==pytest.approx(11.5)
+    assert result[0].combined_stats['sprint_speed_modifier']==pytest.approx(12.75 if known else 11.5)
     view=result[0].artifacts[0]
-    assert view.art_percent==115 and scenario.source(view) is opts[0]
+    assert view.art_percent==(127.5 if known else 115)
+    assert scenario.source(view) is (view if known else opts[0])
     assert dataclasses.asdict(opts[0])==before
-    assert result[0].to_dict()['artifacts'][0]['calculation']['source_stored_percent']==before['art_percent']
+    calculation=result[0].to_dict()['artifacts'][0].get('calculation')
+    if known:
+        assert calculation is None
+    else:
+        assert calculation['source_stored_percent']==before['art_percent']
     assert not result.search_status['calculation']['robust']
+    assert result.search_status['calculation']['known_percent_preserved']
     info=result.search_status['models'][0]
-    assert info['physical_pool_sha256']!=info['pool_sha256']
+    assert info['physical_pool_sha256'] and info['pool_sha256']
     assert b._final_valid(result[0],10,{},{},True,False,True)
 
 
@@ -72,14 +79,20 @@ def test_original_descriptor_rechecked_after_conservative_solver(monkeypatch,tmp
     assert result.search_status['models'][0]['validation_failed']
 
 
-def test_candidates_feasible_only_at_minimum_survive_preparation(monkeypatch,tmp_path):
+def test_unknown_owned_percent_feasible_only_at_minimum_survives_preparation(monkeypatch,tmp_path):
     opts,path,_=real_market(monkeypatch,tmp_path,[({'sprint_speed_modifier':10,'radiation_accumulation':11.5},2)])
-    opts[0].art_percent=130
-    with sqlite3.connect(path) as c:c.execute('update auction_lots set art_percent=130')
-    assert REAL_COMPUTE(opts[0].base_stats,[],[],130,0,115,15,None)[0]['radiation_accumulation']>10
-    result=call(conservative=True,priorities={'sprint_speed_modifier':10})
+    base=opts[0].base_stats
+    with sqlite3.connect(path) as c:
+        c.execute('create table artefacts(id text,name_ru text,name_en text,subcategory text,stats text,bonus_stats text,icon_url text)')
+        c.execute('insert into artefacts values(?,?,?,?,?,?,?)',('owned','own','','',json.dumps(base),'[]',''))
+    own=dict(item_id='owned',quality=2,ptn=0,art_percent=130,bonus_ids=[],instance_id='mine',
+             _art_percent_known=False)
+    assert REAL_COMPUTE(base,[],[],130,0,115,15,None)[0]['radiation_accumulation']>10
+    result=call(conservative=True,priorities={'sprint_speed_modifier':10},owned_artifacts=[own])
     assert result and result[0].carryable
     assert result[0].combined_stats['radiation_accumulation']==pytest.approx(9.775)
+    assert result[0].artifacts[0].art_percent==115
+    assert scenario.source(result[0].artifacts[0]).art_percent==130
 
 
 @pytest.mark.parametrize('kind',['budget','min','max','carry'])
@@ -87,18 +100,21 @@ def test_scenario_hard_constraints_not_relaxed(monkeypatch,tmp_path,kind):
     real_market(monkeypatch,tmp_path,[({'sprint_speed_modifier':10,'radiation_accumulation':20},2)])
     args=dict(carryable_only=False)
     if kind=='budget':args['budget']=1
-    if kind=='min':args['min_thresholds']={'sprint_speed_modifier':12}
+    if kind=='min':args['min_thresholds']={'sprint_speed_modifier':13}
     if kind=='max':args['max_thresholds']={'sprint_speed_modifier':11}
     if kind=='carry':args['carryable_only']=True
     result=call(conservative=True,priorities={'sprint_speed_modifier':10},**args)
     assert not result
 
 
-def test_owned_source_percent_preserved_but_scenario_uses_quality_minimum(monkeypatch,tmp_path):
+def test_owned_known_percent_preserved_and_unknown_minimized(monkeypatch,tmp_path):
     opts,path,_=real_market(monkeypatch,tmp_path)
     original=opts[0];original.is_owned=True;original.buyout_price=0
     original.auction_lot_id=None;original.physical_id='owned:one';original.owned_instance_id='one'
-    views=scenario.minimum_views([original],{'sprint_speed_modifier':10})
+    known=scenario.minimum_views([original],{'sprint_speed_modifier':10})
+    assert known[0] is original and known[0].art_percent==127.5
+    unknown=dataclasses.replace(original,art_percent_known=False)
+    views=scenario.minimum_views([unknown],{'sprint_speed_modifier':10})
     assert views[0].art_percent==115 and scenario.source(views[0]).art_percent==127.5
     assert scenario.current_views(views,b.get_connection,'EU',b._normalize_bonus_id)==views
 
@@ -124,8 +140,9 @@ def test_owned_conservative_end_to_end_and_conflicting_source_percent(monkeypatc
         c.execute('insert into artefacts values(?,?,?,?,?,?,?)',('owned','own','','',json.dumps(base),'[]',''))
     own=dict(item_id='owned',quality=2,ptn=0,art_percent=129,bonus_ids=[],instance_id='mine')
     result=call(conservative=True,priorities={'sprint_speed_modifier':10},owned_artifacts=[own])
-    assert result and result[0].total_price==0 and result[0].artifacts[0].art_percent==115
-    assert scenario.source(result[0].artifacts[0]).art_percent==129
+    assert result and result[0].total_price==0 and result[0].artifacts[0].art_percent==129
+    assert result[0].combined_stats['sprint_speed_modifier']==pytest.approx(12.9)
+    assert scenario.source(result[0].artifacts[0]) is result[0].artifacts[0]
     bad=call(conservative=True,priorities={'sprint_speed_modifier':10},owned_artifacts=[own,dict(own,art_percent=128)])
     assert not bad and bad.search_status['models'][0]['reason']=='ambiguous_owned_identity'
 
@@ -139,7 +156,7 @@ def test_conservative_container_and_armor_profiles(monkeypatch,tmp_path):
     result=call(conservative=True,priorities={'sprint_speed_modifier':10},armor_ids=[None,'armor'])
     assert result and result.search_status['state']=='OPTIMAL'
     assert result[0].container.item_id=='a' and result[0]._armor['id']=='armor'
-    assert result[0].combined_stats['sprint_speed_modifier']==pytest.approx(13.5)
+    assert result[0].combined_stats['sprint_speed_modifier']==pytest.approx(14.75)
     assert len(result.search_status['models'])==4
 
 
@@ -153,11 +170,11 @@ def test_scenario_model_matches_independent_small_full_enumeration(monkeypatch,t
     opts,_,_=real_market(monkeypatch,tmp_path,rows,slots=2)
     feasible=[]
     for pair in itertools.combinations(opts,2):
-        stats={'sprint_speed_modifier':sum(o.base_stats[0]['max']*1.15 for o in pair),
-               'health_bonus':sum((s['max']*1.15 if s['is_positive'] else 0) for o in pair for s in o.base_stats if s['prop_id']=='health_bonus')}
+        stats={'sprint_speed_modifier':sum(o.base_stats[0]['max']*1.275 for o in pair),
+               'health_bonus':sum((s['max']*1.275 if s['is_positive'] else 0) for o in pair for s in o.base_stats if s['prop_id']=='health_bonus')}
         # Health endpoints can be negative even with is_positive=True; native uses
         # the more-negative endpoint as max. Compute that sign explicitly.
-        health=sum(min(s['min'],s['max'])*1.15 if s['max']<0 else s['max']*1.15 for o in pair for s in o.base_stats if s['prop_id']=='health_bonus')
+        health=sum(min(s['min'],s['max'])*1.275 if s['max']<0 else s['max']*1.275 for o in pair for s in o.base_stats if s['prop_id']=='health_bonus')
         if health>=0 and sum(o.buyout_price for o in pair)<=10:
             feasible.append((stats['sprint_speed_modifier'],-sum(o.buyout_price for o in pair)))
     result=call(conservative=True,priorities={'sprint_speed_modifier':10},min_thresholds={'health_bonus':0})
@@ -183,4 +200,6 @@ def test_real_conservative_api_uses_scenario_and_never_refreshes_market(monkeypa
     data=response.json()
     assert data['search_status']['state']=='OPTIMAL'
     assert data['search_status']['calculation']['mode']=='minimum_quality_point_scenario'
-    assert data['builds'][0]['artifacts'][0]['calculation']['source_stored_percent']==127.5
+    assert data['search_status']['calculation']['known_percent_preserved']
+    assert data['builds'][0]['artifacts'][0]['art_percent']==127.5
+    assert 'calculation' not in data['builds'][0]['artifacts'][0]

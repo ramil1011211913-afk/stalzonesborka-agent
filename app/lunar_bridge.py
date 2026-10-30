@@ -428,6 +428,9 @@ def compute_specific_build(artifacts_spec: list[dict],
 
     # 4. Reaction bonuses
     combined, _ = apply_reaction_bonuses(combined)
+    from ._derived_stats import add_names, augment
+    augment(combined)
+    add_names(combined, combined_names)
 
     # 5. Create build
     # 5. Check carryability

@@ -114,7 +114,7 @@ def load(builder, region, max_price, stock_only, audit):
                                     art_percent=r['art_percent'], buyout_price=r['buyout_price'], ptn=r['ptn'],
                                     stats=values, stats_raw=raw_values, stats_names=names, unlocked_bonus_ids=ids,
                                     icon_url=r['icon_url'], base_stats=base, bonus_stats=bonus, stats_random=r['stats_random'],
-                                    recommended_percent=recommended, auction_lot_id=r['id'], physical_id=f"auction:{region}:{r['id']}")
+                                    recommended_percent=recommended, art_percent_known=True, auction_lot_id=r['id'], physical_id=f"auction:{region}:{r['id']}")
                                 if descriptor_supported(option):
                                     result.append(option)
                                 else:

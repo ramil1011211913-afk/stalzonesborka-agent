@@ -116,7 +116,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="form-group"><label>Дубликаты</label><select id="allowDuplicates"><option value="0" selected>Запретить</option><option value="1">Разрешить</option></select></div>
 <div class="form-group"><label><input type="checkbox" id="stockOnlyToggle"> Только стоковые артефакты</label><small>Использовать для сборки только артефакты без заточки (+0)</small></div>
 <div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0">Макс. стат</label><label class="switch"><input type="checkbox" id="maxStatToggle"><span class="slider"></span></label></div>
-<div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0;font-size:.8em" title="Считать статы по минимальному % качества; это не гарантия для всех процентов">Гарант. мин.</label><label class="switch"><input type="checkbox" id="conservativeToggle" onchange="updateQualityConservativeHint()"><span class="slider"></span></label></div>
+<div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0;font-size:.8em" title="Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам">Гарант. мин.</label><label class="switch"><input type="checkbox" id="conservativeToggle" onchange="updateQualityConservativeHint()"><span class="slider"></span></label></div>
 <div class="form-group" id="qualityDeepField" hidden><label><input type="checkbox" id="qualityDeep" onchange="updateQualityConservativeHint()" disabled> Глубокая оптимизация — 300 секунд</label><small>Общий бюджет поиска; OPTIMAL не гарантируется.</small></div>
 <div class="form-group" id="primaryOnlyField" hidden><label><input type="checkbox" id="primaryOnly" onchange="if(this.checked)document.getElementById('tolerance').value='0'" disabled> Максимум EHP без минимизации цены</label><small>Только Deep и единственный приоритет EHP. Допуск бюджета 0%; цена ограничена бюджетом; минимальная цена не оптимизируется.</small></div>
 <button class="btn" id="buildBtn">Подобрать</button>
@@ -124,7 +124,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 
 <div id="minBudgetHint" hidden role="status" style="color:#f0a050;padding:6px 10px">В режиме минимальной цены веса не задают минимальных значений характеристик. Требования укажите в полях «Мин.».</div>
-<div id="qualityConservativeHint" hidden role="status" style="color:#f0a050;padding:6px 10px">Расчёт при минимальном проценте качества. Не является гарантией характеристик и носимости при всех возможных процентах.</div>
+<div id="qualityConservativeHint" hidden role="status" style="color:#f0a050;padding:6px 10px">Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.</div>
 <div id="templateRow" style="display:none;padding:8px 10px;background:#1a1a2e;border-radius:6px;margin-bottom:8px">
 <div style="display:flex;gap:8px;align-items:center">
 <label style="white-space:nowrap;font-size:.85em;color:#f0a050">📋 Lunar-zone URL:</label>
@@ -277,6 +277,9 @@ async function loadAllStats() {
             if (["effective_health", "healing_percent_per_second", "healing_ehp_per_second"].includes(pid)) {
                 row.title = "Только Max Quality / Deep, Balanced. Веса сравнивают показатели по фиксированной для поиска шкале; обязательное значение задайте в поле мин. Модель Wiki без боевых эффектов. Восстановление — EHP × процент / 100, в EHP/с. Проценты физических лотов могут быть неизвестны.";
                 row.querySelectorAll("input[type=number]").forEach(input => input.step = "any");
+            }
+            if (pid === "total_speed") {
+                row.title = "Общая скорость = скорость передвижения + скорость бега. Доступна во всех режимах поиска.";
             }
             container.appendChild(row);
         }

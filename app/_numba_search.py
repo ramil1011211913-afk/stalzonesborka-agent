@@ -423,6 +423,8 @@ def search(candidates, k, budget, max_counter, prot_mult,
         priorities, stat_max, "min_budget" if min_budget else optimization_mode,
         priority_order, objective_tolerance,
     )
+    from ._derived_stats import augment_bonus_stats, value as stat_value
+    cont_bonus_dict = augment_bonus_stats(dict(cont_bonus_dict or {}))
     min_budget = objective.mode == "min_budget"
     if n < k:
         return np.array([]), np.zeros((0, k), dtype=np.int32)
@@ -457,7 +459,7 @@ def search(candidates, k, budget, max_counter, prot_mult,
         objective_coeffs[stat_keys.index(key)] = coefficient
     lex_idx = np.array([stat_keys.index(key) for key in objective.order], dtype=np.int32)
     lex_dir = np.array([direction(key) for key in objective.order])
-    raw_mx = np.array([[opt.stats.get(key, 0.0) for key in stat_keys]
+    raw_mx = np.array([[stat_value(opt.stats, key) for key in stat_keys]
                        for opt in candidates], dtype=np.float64)
     tear_idx = stat_keys.index("tear_dmg_factor") if "tear_dmg_factor" in stat_keys else -1
     stop_idx = stat_keys.index("stopping_protection") if "stopping_protection" in stat_keys else -1

@@ -34,6 +34,8 @@ def solve(candidates, slots, budget, max_counter, protection, bonuses,
     except ImportError:
         return None, dict(info, reason='solver_unavailable')
     n = len(candidates)
+    from ._derived_stats import augment_bonus_stats, value as stat_value
+    bonuses = augment_bonus_stats(dict(bonuses or {}))
     prices = np.array([c.buyout_price for c in candidates], dtype=float)
     if not np.isfinite(prices).all() or np.any(prices < 0) or np.any(prices > 2**53):
         return None, dict(info, reason='unsupported_prices')
@@ -66,7 +68,7 @@ def solve(candidates, slots, budget, max_counter, protection, bonuses,
                     vector(np.zeros(n), 1, np.inf)  # Impossible positive lower bound.
                 return
             target /= protection
-        values = np.array([c.stats.get(key, 0) for c in candidates], dtype=float)
+        values = np.array([stat_value(c.stats, key) for c in candidates], dtype=float)
         if not np.isfinite(values).all() or not math.isfinite(target):
             raise ValueError('Nonfinite model')
         vector(values, target if is_min else -np.inf, np.inf if is_min else target)
