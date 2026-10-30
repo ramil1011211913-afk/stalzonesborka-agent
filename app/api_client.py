@@ -16,6 +16,11 @@ from .config import Config
 
 log = logging.getLogger(__name__)
 
+
+class AuctionAPIError(RuntimeError):
+    """The auction endpoint did not confirm a complete, usable response."""
+
+
 # Quality mapping from eapi-wiki art_stats.md
 QUALITY_NAMES = {
     0: "Common",
@@ -134,7 +139,9 @@ class StalzoneAPI:
         path = f"/{self.region}/auction/{item_id}/history"
         params = {"limit": min(limit, 200), "offset": offset, "additional": str(additional).lower()}
         data = self._get(path, params)
-        return data if isinstance(data, dict) else {"total": 0, "prices": []}
+        if not isinstance(data, dict):
+            raise AuctionAPIError("Auction history request failed; empty history not confirmed")
+        return data
 
     def get_auction_lots(self, item_id: str, limit: int = 200, offset: int = 0,
                          sort: str = "time_created", order: str = "asc",
@@ -152,7 +159,9 @@ class StalzoneAPI:
             "additional": str(additional).lower(),
         }
         data = self._get(path, params)
-        return data if isinstance(data, dict) else {"total": 0, "lots": []}
+        if not isinstance(data, dict):
+            raise AuctionAPIError("Auction lots request failed; empty market not confirmed")
+        return data
 
     def fetch_all_history(self, item_id: str, max_records: int = 200) -> list[dict]:
         """Fetch full price history with pagination, up to max_records."""
@@ -172,21 +181,44 @@ class StalzoneAPI:
         return all_prices[:max_records]
 
     def fetch_all_lots(self, item_id: str, max_records: int = 200) -> list[dict]:
-        """Fetch all active lots with pagination, up to max_records."""
+        """Fetch all active lots with pagination.
+
+        A partial page, a changing total, or a result larger than max_records
+        rejects the item instead of publishing an incomplete market.
+        """
         all_lots = []
         offset = 0
-        while offset < max_records:
+        expected_total = None
+        while True:
             data = self.get_auction_lots(item_id, limit=200, offset=offset, additional=True)
             lots = data.get("lots", [])
+            total = data.get("total", 0)
+            if expected_total is None:
+                expected_total = total
+                if expected_total > max_records:
+                    raise AuctionAPIError(
+                        f"Auction for {item_id} has {expected_total} lots, "
+                        f"above max_records={max_records}")
+            elif total != expected_total:
+                raise AuctionAPIError(
+                    f"Auction total changed for {item_id}: "
+                    f"{expected_total} -> {total}")
             if not lots:
+                if offset < expected_total:
+                    raise AuctionAPIError(
+                        f"Auction pagination ended early for {item_id}: "
+                        f"{offset}/{expected_total}")
                 break
             all_lots.extend(lots)
-            total = data.get("total", 0)
             offset += len(lots)
-            if offset >= total:
+            if offset >= expected_total:
                 break
+        if expected_total is not None and offset != expected_total:
+            raise AuctionAPIError(
+                f"Auction pagination incomplete for {item_id}: "
+                f"{offset}/{expected_total}")
         log.debug("Fetched %d lots for %s", len(all_lots), item_id)
-        return all_lots[:max_records]
+        return all_lots
 
     def get_emission(self) -> dict | None:
         """Fetch last emission schedule. App auth (works with Client-Id/Secret).

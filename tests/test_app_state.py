@@ -121,6 +121,52 @@ def test_collector_uses_fenced_atomic_publish_and_shared_terminal_state(tmp_path
     recovery.finish()
 
 
+def test_collector_api_failure_preserves_existing_lots(tmp_path, monkeypatch):
+    from app import collector, database
+    from app.api_client import AuctionAPIError
+    from app.config import Config
+    monkeypatch.setattr(Config, 'DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(Config, 'DB_PATH', str(tmp_path / 'market.db'))
+    database.init_db()
+    store = StateStore(tmp_path / 'app_state.sqlite3')
+    lease = store.claim(auction_job(Config.REGION))
+    database.replace_lots_for_item('a', [{'buyoutPrice': 42}], Config.REGION, lease)
+    lease.finish()
+
+    def failed(*args, **kwargs):
+        raise AuctionAPIError('network failed')
+    monkeypatch.setattr(collector.StalzoneAPI, 'fetch_all_lots', failed)
+    with pytest.raises(RuntimeError, match='failed for 1 items'):
+        collector.collect_auction_data(item_ids=['a'], include_history=False)
+    with sqlite3.connect(Config.DB_PATH) as conn:
+        assert conn.execute(
+            'SELECT buyout_price FROM auction_lots WHERE item_id=?', ('a',)
+        ).fetchall() == [(42,)]
+
+
+@pytest.mark.parametrize('pages,max_records,message', [
+    ([{'total': 3, 'lots': [{'id': 1}]}, {'total': 3, 'lots': []}], 10, 'ended early'),
+    ([{'total': 2, 'lots': [{'id': 1}]},
+      {'total': 3, 'lots': [{'id': 2}, {'id': 3}]}], 10, 'changed'),
+    ([{'total': 5, 'lots': [{'id': 1}]}], 2, 'above max_records'),
+])
+def test_fetch_all_lots_rejects_incomplete_pagination(monkeypatch, pages, max_records, message):
+    from app.api_client import AuctionAPIError, StalzoneAPI
+    api = StalzoneAPI.__new__(StalzoneAPI)
+    monkeypatch.setattr(api, 'get_auction_lots', lambda *args, **kwargs: pages.pop(0))
+    with pytest.raises(AuctionAPIError, match=message):
+        api.fetch_all_lots('x', max_records=max_records)
+
+
+def test_fetch_all_lots_accepts_complete_pagination(monkeypatch):
+    from app.api_client import StalzoneAPI
+    api = StalzoneAPI.__new__(StalzoneAPI)
+    pages = [{'total': 2, 'lots': [{'id': 1}]},
+             {'total': 2, 'lots': [{'id': 2}]}]
+    monkeypatch.setattr(api, 'get_auction_lots', lambda *args, **kwargs: pages.pop(0))
+    assert api.fetch_all_lots('x', max_records=2) == [{'id': 1}, {'id': 2}]
+
+
 def test_history_merge_deduplicates_and_keeps_window(tmp_path, monkeypatch):
     from app import database
     from app.config import Config

@@ -49,7 +49,7 @@ def collect_containers():
     return containers
 
 
-def collect_auction_data(item_ids: list[str] | None = None, max_lots: int = 200,
+def collect_auction_data(item_ids: list[str] | None = None, max_lots: int = 1000,
                          item_source: str = "all", lease=None,
                          include_history: bool = True, max_history: int = 200):
     """One coordinated refresh, whether invoked by API or CLI."""
@@ -207,7 +207,7 @@ def main():
     parser.add_argument("--artefacts", action="store_true", help="Only fetch item database (artefacts+containers) from GitHub")
     parser.add_argument("--auction", action="store_true", help="Only fetch auction data from eAPI")
     parser.add_argument("--containers-only", action="store_true", help="Only fetch auction data for containers/backpacks")
-    parser.add_argument("--max-lots", type=int, default=100, help="Max active lots per item")
+    parser.add_argument("--max-lots", type=int, default=1000, help="Max active lots per item")
     parser.add_argument("--max-history", type=int, default=200, help="Max sold-lot records per item")
     parser.add_argument("--no-history", action="store_true", help="Skip sold-lot history collection")
     args = parser.parse_args()

@@ -420,10 +420,10 @@ async def api_all_stats():
 REFRESH_LEASE_SECONDS = DEFAULT_LEASE_SECONDS
 
 def _run_auction_refresh(lease):
-    """Background auction data refresh — concurrent (8 workers, limit=200)."""
+    """Background auction data refresh - concurrent (8 workers, limit=1000)."""
     try:
         from .collector import collect_auction_data
-        collect_auction_data(max_lots=200, item_source='artefacts', lease=lease)
+        collect_auction_data(max_lots=1000, item_source='artefacts', lease=lease)
         log.info("Auction refresh done")
     except Exception as e:
         lease.finish(str(e))
