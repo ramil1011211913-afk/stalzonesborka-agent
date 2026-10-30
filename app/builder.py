@@ -1569,10 +1569,10 @@ def build_artifact_sets(
     if roll_optimize:
         if guaranteed_carryable:
             raise ValueError('roll_optimize cannot be combined with guaranteed_carryable')
-        if _quality_context is not None:
-            raise ValueError('roll_optimize is not supported with Max Quality')
         # Start from the optimistic tier maximum, then lower only where the
-        # fixed-set planner must.  Known percentages remain actual.
+        # fixed-set planner must.  Known percentages remain actual.  Max
+        # Quality prepares the same maximum baseline and plans its winner
+        # after the selection MILP.
         mode = 'maximum'
     else:
         mode = requested_mode

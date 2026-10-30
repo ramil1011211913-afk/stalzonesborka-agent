@@ -178,6 +178,51 @@ def test_optimize_build_attaches_plan_and_keeps_known_roll():
     assert result.roll_plan["carryable"]
 
 
+def test_max_quality_attaches_plan_without_weakening_milp_winner(monkeypatch, tmp_path):
+    from tests.test_max_quality import call
+    from tests.test_unknown_percent_modes import UNKNOWN_LOT, helium_market
+    helium_market(monkeypatch, tmp_path)
+    result = call(budget=3_000_000, roll_optimize=True,
+                  unknown_percent='minimum')
+    assert result and result.search_status['state'] == 'OPTIMAL', result.search_status
+    assert result.unknown_percent == 'maximum'
+    assert result.search_status['requested_unknown_percent'] == 'minimum'
+    assert result.search_status['roll_optimize_baseline'] == 'maximum'
+    build = result[0]
+    assert build.artifacts[0].auction_lot_id == UNKNOWN_LOT
+    assert build.artifacts[0].art_percent == 130.0
+    assert build.roll_plan and build.roll_plan['enabled']
+    assert build.roll_plan['exact_hundredths']
+    assert build.roll_plan['known_percent_preserved']
+    assert build.roll_plan_search['mode'] == 'max_quality'
+    assert build.roll_plan_search['baseline'] == 'maximum'
+    assert build.roll_plan_search['optimized'] == 1
+    assert build.roll_plan_search['failed'] == 0
+    choice = build.roll_plan['artifacts'][0]
+    assert choice['variable'] and not choice['changed']
+    assert choice['percent'] == 130.0
+
+
+def test_max_quality_changed_plan_downgrades_proof_to_feasible(monkeypatch, tmp_path):
+    from tests.test_max_quality import call
+    from tests.test_unknown_percent_modes import helium_market
+    from app import _roll_plan as planner
+    helium_market(monkeypatch, tmp_path)
+    real = planner.optimize_build
+
+    def changed_plan(*args, **kwargs):
+        result, plan = real(*args, **kwargs)
+        result.roll_plan['artifacts'][0]['changed'] = True
+        return result, plan
+
+    monkeypatch.setattr(planner, 'optimize_build', changed_plan)
+    result = call(budget=3_000_000, roll_optimize=True)
+    assert result.search_status['state'] == 'FEASIBLE'
+    assert result.search_status['reason'] == 'roll_plan_applied'
+    assert not result.search_status['optimality_proven']
+    assert result[0].roll_plan_search['changed'] is True
+
+
 def test_api_forwards_roll_optimize(monkeypatch, tmp_path):
     from tests.test_stock_only import api
     main, client = api(monkeypatch, tmp_path)
@@ -196,7 +241,6 @@ def test_api_forwards_roll_optimize(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('params', [
-    {'roll_optimize': 'true', 'max_quality': 'true'},
     {'roll_optimize': 'true', 'min_budget': 'true'},
     {'roll_optimize': 'true', 'guaranteed_carryable': 'true'},
 ])
@@ -206,3 +250,23 @@ def test_api_rejects_roll_optimize_with_incompatible_modes(monkeypatch, tmp_path
     response = client.get('/api/builds', params={'budget': 10, **params})
     assert response.status_code == 422
     assert 'roll_optimize' in response.json()['error']
+
+
+def test_api_forwards_roll_optimize_to_max_quality(monkeypatch, tmp_path):
+    from tests.test_stock_only import api
+    from app import _max_quality as quality
+    main, client = api(monkeypatch, tmp_path)
+    seen = []
+
+    def engine(**kwargs):
+        seen.append(kwargs)
+        return quality.QualityResults(reason='test')
+
+    monkeypatch.setattr(main, 'MAX_QUALITY_RELEASED', True)
+    monkeypatch.setattr(quality, 'build_max_quality_sets', engine)
+    response = client.get('/api/builds', params={
+        'budget': 10, 'max_quality': 'true', 'roll_optimize': 'true'})
+    assert response.status_code == 200, response.text
+    assert seen and seen[0]['roll_optimize'] is True
+    assert response.json()['roll_optimize'] is True
+    assert response.json()['unknown_percent'] == 'maximum'

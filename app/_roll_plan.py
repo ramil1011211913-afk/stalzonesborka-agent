@@ -520,30 +520,36 @@ def _planned_option(option, percent, container, variable):
 
 
 def optimize_build(build, objective, minimum=None, maximum=None, carry=True,
-                   duplicates=False, time_limit=MAX_SECONDS):
-    """Return a new build with a feasible roll plan, or ``None``."""
+                   duplicates=False, time_limit=MAX_SECONDS, container=None,
+                   return_plan=False):
+    """Return a new build with a feasible roll plan, or ``None``.
+
+    ``container`` overrides the build's container when the caller has already
+    decorated the build and kept the effective (armor-augmented) profile.
+    """
     from .builder import _final_valid, _process_combo
+    effective = container if container is not None else build.container
     artifacts = list(build.artifacts)
-    plan = solve(artifacts, build.container, objective, minimum, maximum,
+    plan = solve(artifacts, effective, objective, minimum, maximum,
                  carry=carry, time_limit=time_limit)
     if not plan.feasible:
-        return None
-    planned = [_planned_option(option, percent, build.container, choice.variable)
+        return (None, plan) if return_plan else None
+    planned = [_planned_option(option, percent, effective, choice.variable)
                for option, percent, choice in zip(artifacts, plan.percents, plan.choices)]
     checked = []
-    _process_combo(tuple(planned), build.container, build.total_price,
+    _process_combo(tuple(planned), effective, build.total_price,
                    build.priorities, None, checked, 0, objective=objective,
                    max_thresholds=None, require_carry=False,
                    allow_duplicates=duplicates)
     if not checked:
-        return None
+        return (None, plan) if return_plan else None
     result = checked[0]
     if not _final_valid(result, math.inf, minimum, maximum, carry, False, duplicates):
-        return None
+        return (None, plan) if return_plan else None
     result._search_request = getattr(build, "_search_request", None)
     result.guaranteed_carryable = False
     result.roll_plan = _plan_dict(plan, result)
-    return result
+    return (result, plan) if return_plan else result
 
 
 def _plan_dict(plan, build):
@@ -573,6 +579,23 @@ def _plan_dict(plan, build):
         ],
         note=("Целевые роллы для неизвестных процентов в сотых. "
               "Известные проценты и хранилище не меняются; это план, а не гарантия рынка."),
+    )
+
+
+def plan_failure(plan, build):
+    """JSON-safe description of a plan that could not be applied."""
+    return dict(
+        enabled=True,
+        exact_hundredths=True,
+        status=plan.status,
+        reason=plan.reason,
+        solver_status=plan.solver_status,
+        message=plan.message,
+        carryable=bool(build.carryable),
+        warnings=list(build.carryability_warnings),
+        known_percent_preserved=True,
+        artifacts=[],
+        note="План роллов не найден для этой сборки; показан исходный максимум тира.",
     )
 
 

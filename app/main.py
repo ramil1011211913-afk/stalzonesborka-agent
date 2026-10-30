@@ -228,8 +228,6 @@ def api_builds(
         armor_list = json.loads(armor_ids) if armor_ids else None
         from ._quality_scenario import resolve_mode
         unknown_mode = resolve_mode(conservative, unknown_percent)
-        if roll_optimize and max_quality:
-            raise ValueError('roll_optimize is not supported with max_quality')
         if roll_optimize and min_budget:
             raise ValueError('roll_optimize is not supported with min_budget')
         if roll_optimize and guaranteed_carryable:

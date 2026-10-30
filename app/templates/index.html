@@ -182,12 +182,15 @@ function updateQualityConservativeHint() {
     const percentMode = document.getElementById('unknownPercentMode').value;
     const percentHint = document.getElementById('qualityConservativeHint');
     const rollToggle = document.getElementById('rollOptimizeToggle');
-    const rollAllowed = !isQuality && document.getElementById('objectiveMode').value !== 'min_budget';
+    const rollAllowed = document.getElementById('objectiveMode').value !== 'min_budget'
+        && !document.getElementById('primaryOnly').checked;
     rollToggle.disabled = !rollAllowed;
     if (!rollAllowed) rollToggle.checked = false;
     percentHint.hidden = percentMode === 'maximum' && !rollToggle.checked;
     if (rollToggle.checked) {
-        percentHint.textContent = 'Известные проценты не меняются. Для неизвестных лотов поиск стартует от максимума тира и подбирает точные целевые роллы в сотых, чтобы сборка прошла по носимости и лимитам. Это план, а не гарантия рынка.';
+        percentHint.textContent = isQuality
+            ? 'Max Quality выбирает сборку MILP по максимуму тира, затем для неизвестных лотов подбираются точные целевые роллы в сотых. Если план невозможен, показывается исходный максимум тира. Известные проценты не меняются; это план, а не гарантия рынка.'
+            : 'Известные проценты не меняются. Для неизвестных лотов поиск стартует от максимума тира и подбирает точные целевые роллы в сотых, чтобы сборка прошла по носимости и лимитам. Это план, а не гарантия рынка.';
     } else if (percentMode === 'minimum') {
         percentHint.textContent = 'Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.';
     } else if (percentMode === 'midpoint') {
@@ -735,7 +738,7 @@ async function findBuilds() {
         params.append('priority_order', JSON.stringify(lexOrder));
     }
     params.append('unknown_percent', document.getElementById('unknownPercentMode').value);
-    if (document.getElementById('rollOptimizeToggle').checked && objectiveMode !== 'max_quality' && objectiveMode !== 'min_budget') {
+    if (document.getElementById('rollOptimizeToggle').checked && objectiveMode !== 'min_budget') {
         params.append('roll_optimize', 'true');
     }
     // Exclude: merge UI excludes + template-mode artifact restriction
