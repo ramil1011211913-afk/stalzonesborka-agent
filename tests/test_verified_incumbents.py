@@ -17,10 +17,10 @@ def conservative_market(monkeypatch,tmp_path):
         CREATE TABLE artefacts(id TEXT,name_ru TEXT,name_en TEXT,subcategory TEXT,stats TEXT,bonus_stats TEXT,icon_url TEXT);
         CREATE TABLE auction_history(item_id TEXT,quality INTEGER,price INTEGER,region TEXT);
         CREATE TABLE auction_lots(id INTEGER,item_id TEXT,region TEXT,quality INTEGER,ptn INTEGER,buyout_price INTEGER,
-          bonus_properties TEXT,art_percent REAL,stats_random REAL,end_time TEXT);
+          bonus_properties TEXT,art_percent REAL,stats_random REAL,end_time TEXT,additional_raw TEXT);
         ''')
         c.execute('INSERT INTO artefacts VALUES(?,?,?,?,?,?,?)',('a','A','','',json.dumps([dict(prop_id='speed_modifier',min=0,max=10,is_positive=True)]),'[]',''))
-        c.execute('INSERT INTO auction_lots VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'a','EU',2,0,5,'[]',127.5,0.,'2099-01-01T00:00:00Z'))
+        c.execute('INSERT INTO auction_lots VALUES(?,?,?,?,?,?,?,?,?,?,?)',(1,'a','EU',2,0,5,'[]',127.5,0.,'2099-01-01T00:00:00Z','{}'))
     @contextmanager
     def connect():
         c=sqlite3.connect(path);c.row_factory=sqlite3.Row
@@ -43,6 +43,24 @@ def test_ordinary_conservative_can_purchase_a_known_real_lot(conservative_market
     assert result and result[0].combined_stats['speed_modifier']==12.75
     assert result[0].total_price==5
     assert source(result[0].artifacts[0]).art_percent==127.5
+
+
+def test_ordinary_conservative_minimizes_missing_stats_random(conservative_market):
+    with sqlite3.connect(conservative_market) as c:
+        c.execute("UPDATE auction_lots SET quality=3, art_percent=145, stats_random=0, additional_raw=?",
+                  ('{"qlt":3}',))
+    view=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)[0]
+    assert view.art_percent==130 and view.stats['speed_modifier']==13
+    assert source(view).art_percent==145
+
+
+def test_ordinary_conservative_keeps_real_max_with_stats_random(conservative_market):
+    with sqlite3.connect(conservative_market) as c:
+        c.execute("UPDATE auction_lots SET quality=3, art_percent=145, stats_random=2, additional_raw=?",
+                  ('{"qlt":3,"stats_random":2}',))
+    view=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)[0]
+    assert view.art_percent==145 and view.stats['speed_modifier']==14.5
+    assert source(view) is view
 
 
 def test_ordinary_conservative_minimizes_only_unknown_stored_percent(conservative_market):
@@ -78,7 +96,7 @@ def test_expired_diversity_anchor_does_not_hide_a_better_valid_incumbent(monkeyp
 
 def test_two_equal_price_real_copies_survive_conservative_views(monkeypatch,conservative_market):
     with sqlite3.connect(conservative_market) as c:
-        c.execute('INSERT INTO auction_lots SELECT 2,item_id,region,quality,ptn,buyout_price,bonus_properties,art_percent,stats_random,end_time FROM auction_lots WHERE id=1')
+        c.execute('INSERT INTO auction_lots SELECT 2,item_id,region,quality,ptn,buyout_price,bonus_properties,art_percent,stats_random,end_time,additional_raw FROM auction_lots WHERE id=1')
     monkeypatch.setattr(b,'load_container_options',lambda region:[container(slots=2)])
     options=b.load_artifact_options(priorities={'speed_modifier':10},region='EU',conservative=True)
     assert {source(o).auction_lot_id for o in options}=={1,2}

@@ -1290,7 +1290,8 @@ def load_artifact_options(priorities: dict | None = None,
         rows = conn.execute("""
             SELECT a.id, a.name_ru, a.name_en, a.subcategory, a.stats, a.bonus_stats, a.icon_url,
                    l.quality, l.ptn, l.buyout_price as min_price,
-                   l.bonus_properties, l.art_percent, l.stats_random, l.id AS auction_lot_id
+                   l.bonus_properties, l.art_percent, l.stats_random,
+                   l.additional_raw, l.id AS auction_lot_id
             FROM artefacts a
             LEFT JOIN (
                 SELECT *, ROW_NUMBER() OVER (
@@ -1359,7 +1360,15 @@ def load_artifact_options(priorities: dict | None = None,
                              art["name_ru"], quality, price, _hist)
                     continue
             qr = QUALITY_RANGES.get(quality, QUALITY_RANGES[0])
-            art_percent_known = bool(lot["art_percent"])
+            raw_additional = {}
+            if "additional_raw" in lot.keys() and lot["additional_raw"]:
+                try:
+                    raw_additional = json.loads(lot["additional_raw"])
+                except (json.JSONDecodeError, TypeError):
+                    raw_additional = {}
+            from ._quality_scenario import percent_known
+            art_percent_known = bool(lot["art_percent"]) and percent_known(
+                raw_additional, lot["stats_random"], quality, lot["art_percent"])
             if art_percent_known:
                 art_percent = lot["art_percent"]  # base from calc_art_percent(stats_random); ptn applied in _calc_stat_value via calc_ptn_bonus
             else:

@@ -23,11 +23,11 @@ def market(monkeypatch, tmp_path, rows=None, slots=2):
     options = builder.load_artifact_options()
     path = tmp_path / 'market.db'
     with sqlite3.connect(path) as c:
-        c.execute('CREATE TABLE auction_lots(id INTEGER PRIMARY KEY,item_id TEXT,region TEXT,buyout_price INTEGER,quality INTEGER,ptn INTEGER,art_percent REAL,stats_random REAL,bonus_properties TEXT,end_time TEXT)')
+        c.execute('CREATE TABLE auction_lots(id INTEGER PRIMARY KEY,item_id TEXT,region TEXT,buyout_price INTEGER,quality INTEGER,ptn INTEGER,art_percent REAL,stats_random REAL,bonus_properties TEXT,end_time TEXT,additional_raw TEXT)')
         for i, o in enumerate(options):
             o.auction_lot_id = i + 1; o.physical_id = f'auction:EU:{i+1}'
-            c.execute('INSERT INTO auction_lots VALUES(?,?,?,?,?,?,?,?,?,?)',
-                      (i+1, o.item_id, 'EU', o.buyout_price, 0, 0, 100, None, '[]', '2099-01-01T00:00:00Z'))
+            c.execute('INSERT INTO auction_lots VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                      (i+1, o.item_id, 'EU', o.buyout_price, 0, 0, 100, None, '[]', '2099-01-01T00:00:00Z', '{}'))
     @contextmanager
     def connect():
         c = sqlite3.connect(path); c.row_factory = sqlite3.Row

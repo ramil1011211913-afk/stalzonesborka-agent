@@ -176,6 +176,8 @@ def init_db():
         existing_lots_cols = {r["name"] for r in conn.execute("PRAGMA table_info(auction_lots)")}
         if "ptn" not in existing_lots_cols:
             conn.execute("ALTER TABLE auction_lots ADD COLUMN ptn INTEGER DEFAULT 0")
+        if "additional_raw" not in existing_lots_cols:
+            conn.execute("ALTER TABLE auction_lots ADD COLUMN additional_raw TEXT NOT NULL DEFAULT '{}'")
 
         existing_art_cols = {r["name"] for r in conn.execute("PRAGMA table_info(artefacts)")}
 

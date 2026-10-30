@@ -35,6 +35,24 @@ def call(**kwargs):
     params.update(kwargs)
     return q.build_max_quality_sets(**params)
 
+@pytest.mark.parametrize('raw,stored,percent,expected',[
+    ('{"qlt":0}',0,100,85),
+    ('{"qlt":0,"stats_random":2}',2,100,100),
+])
+def test_conservative_minimizes_only_missing_stats_random(monkeypatch,tmp_path,raw,stored,percent,expected):
+    path,_=sql_market(monkeypatch,tmp_path)
+    with sqlite3.connect(path) as c:
+        c.execute('UPDATE auction_lots SET art_percent=?,stats_random=?,additional_raw=?',
+                  (percent,stored,raw))
+    result=call(conservative=True)
+    assert result and result.search_status['state']=='OPTIMAL',result.search_status
+    assert result[0].artifacts[0].art_percent==expected
+    if expected!=percent:
+        assert result[0].to_dict()['artifacts'][0]['calculation']['source_stored_percent']==percent
+    else:
+        assert 'calculation' not in result[0].to_dict()['artifacts'][0]
+
+
 @pytest.mark.parametrize('conservative',[False,True])
 @pytest.mark.parametrize('stock',[False,True])
 def test_actual_full_loader_and_search(monkeypatch,tmp_path,conservative,stock):

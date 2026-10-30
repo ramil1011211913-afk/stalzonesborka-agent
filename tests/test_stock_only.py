@@ -120,8 +120,8 @@ def test_loader_checks_raw_sql_level_including_null(monkeypatch, tmp_path):
     with sqlite3.connect(path) as c:
         c.execute('create table artefacts(id text,name_ru text,name_en text,subcategory text,stats text,bonus_stats text,icon_url text)')
         c.execute('insert into artefacts values(?,?,?,?,?,?,?)', ('a', 'a', '', '', json.dumps([dict(prop_id='speed_modifier', min=1, max=2, is_positive=True)]), '[]', ''))
-        c.execute('create table auction_lots(id integer,item_id text,region text,quality integer,ptn integer,buyout_price integer,bonus_properties text,art_percent real,stats_random real)')
-        for i, level in enumerate([None, *range(16)]):c.execute('insert into auction_lots values(?,?,?,?,?,?,?,?,?)', (i+1, 'a', 'EU', 0, level, 1, '[]', 100, None))
+        c.execute('create table auction_lots(id integer,item_id text,region text,quality integer,ptn integer,buyout_price integer,bonus_properties text,art_percent real,stats_random real,additional_raw text)')
+        for i, level in enumerate([None, *range(16)]):c.execute('insert into auction_lots values(?,?,?,?,?,?,?,?,?,?)', (i+1, 'a', 'EU', 0, level, 1, '[]', 100, None, '{}'))
         c.execute('create table auction_history(item_id text,region text,quality integer,price integer)')
     @contextmanager
     def connect():

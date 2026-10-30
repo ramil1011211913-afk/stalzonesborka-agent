@@ -6,6 +6,32 @@ point scenario, not a robust bound and not a change to stats_random conversion.
 from dataclasses import replace
 import hashlib
 import json
+import math
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def percent_known(raw, stored=None, quality=None, art_percent=None):
+    """Whether a physical percentage came from a real quality roll.
+
+    eAPI omits ``stats_random`` for many lots. The collector then stores the
+    tier maximum as a display default, which must not be mistaken for a known
+    percentage. The raw additional object preserves the distinction.
+    """
+    if isinstance(raw, dict) and 'stats_random' in raw:
+        return _number(raw.get('stats_random'))
+    if _number(stored) and stored != 0:
+        return True
+    # Legacy rows without raw additional: a non-maximum percentage is specific
+    # enough to keep. A maximum may still be the synthetic default.
+    if _number(art_percent) and quality is not None:
+        from . import builder as b
+        qr = b.QUALITY_RANGES.get(quality)
+        if qr is not None:
+            return not math.isclose(art_percent, qr['min'] + qr['range'], abs_tol=1e-9)
+    return False
 
 
 def source(option):

@@ -103,6 +103,8 @@ def load(builder, region, max_price, stock_only, audit):
                         elif not _number(r['art_percent']) or not 0 < r['art_percent'] <= 190 or (r['stats_random'] is not None and not _number(r['stats_random'])):
                             reason = 'invalid_original_percent_descriptor'; is_unknown = True
                         else:
+                            from ._quality_scenario import percent_known
+                            known_percent = percent_known(raw, r['stats_random'], r['quality'], r['art_percent'])
                             qr = builder.QUALITY_RANGES[r['quality']]
                             values, raw_values, names, recommended = builder.compute_artifact_stats(
                                 base, bonus, ids, r['art_percent'], r['ptn'], qr['min'], qr['range'], r['stats_random'])
@@ -114,7 +116,7 @@ def load(builder, region, max_price, stock_only, audit):
                                     art_percent=r['art_percent'], buyout_price=r['buyout_price'], ptn=r['ptn'],
                                     stats=values, stats_raw=raw_values, stats_names=names, unlocked_bonus_ids=ids,
                                     icon_url=r['icon_url'], base_stats=base, bonus_stats=bonus, stats_random=r['stats_random'],
-                                    recommended_percent=recommended, art_percent_known=True, auction_lot_id=r['id'], physical_id=f"auction:{region}:{r['id']}")
+                                    recommended_percent=recommended, art_percent_known=known_percent, auction_lot_id=r['id'], physical_id=f"auction:{region}:{r['id']}")
                                 if descriptor_supported(option):
                                     result.append(option)
                                 else:
