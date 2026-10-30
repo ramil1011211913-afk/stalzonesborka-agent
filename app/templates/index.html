@@ -117,7 +117,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="form-group"><label><input type="checkbox" id="stockOnlyToggle"> Только стоковые артефакты</label><small>Использовать для сборки только артефакты без заточки (+0)</small></div>
 <div class="form-group" style="display:flex;align-items:center;gap:6px"><label style="margin:0">Макс. стат</label><label class="switch"><input type="checkbox" id="maxStatToggle"><span class="slider"></span></label></div>
 <div class="form-group" style="min-width:190px"><label title="Известный процент лота сохраняется; выбранная точка диапазона применяется только к неизвестным процентам">Процент неизвестных лотов</label><select id="unknownPercentMode" onchange="updateQualityConservativeHint()"><option value="minimum">Гарант. минимум</option><option value="midpoint" selected>Ожидаемо (середина)</option><option value="maximum">Максимум тира</option></select><small>Гарантия / ожидаемая оценка / оптимистичный потолок.</small></div>
-<div class="form-group" style="min-width:210px"><label><input type="checkbox" id="rollOptimizeToggle" onchange="updateQualityConservativeHint()"> 🎲 Планировать роллы</label><small>Старт от максимума тира; для неизвестных лотов подбираются точные проценты в сотых, чтобы сборка прошла по носимости и лимитам. Известные проценты не меняются.</small></div>
+<div class="form-group" style="min-width:210px"><label><input type="checkbox" id="rollOptimizeToggle" onchange="updateQualityConservativeHint()"> 🎲 Планировать роллы</label><small>Цели для неизвестных роллов в сотых. При «Гарант. минимум» сборка обязана проходить на минимуме; план лишь предлагает роллы выше.</small></div>
 <div class="form-group" id="qualityDeepField" hidden><label><input type="checkbox" id="qualityDeep" onchange="updateQualityConservativeHint()" disabled> Глубокая оптимизация — 300 секунд</label><small>Общий бюджет поиска; OPTIMAL не гарантируется.</small></div>
 <div class="form-group" id="primaryOnlyField" hidden><label><input type="checkbox" id="primaryOnly" onchange="if(this.checked)document.getElementById('tolerance').value='0'" disabled> Максимум EHP без минимизации цены</label><small>Только Deep и единственный приоритет EHP. Допуск бюджета 0%; цена ограничена бюджетом; минимальная цена не оптимизируется.</small></div>
 <button class="btn" id="buildBtn">Подобрать</button>
@@ -188,9 +188,15 @@ function updateQualityConservativeHint() {
     if (!rollAllowed) rollToggle.checked = false;
     percentHint.hidden = percentMode === 'maximum' && !rollToggle.checked;
     if (rollToggle.checked) {
-        percentHint.textContent = isQuality
-            ? 'Max Quality выбирает сборку MILP по максимуму тира, затем для неизвестных лотов подбираются точные целевые роллы в сотых. Если план невозможен, показывается исходный максимум тира. Известные проценты не меняются; это план, а не гарантия рынка.'
-            : 'Известные проценты не меняются. Для неизвестных лотов поиск стартует от максимума тира и подбирает точные целевые роллы в сотых, чтобы сборка прошла по носимости и лимитам. Это план, а не гарантия рынка.';
+        if (percentMode === 'minimum') {
+            percentHint.textContent = isQuality
+                ? 'Max Quality выбирает сборку MILP по гарантированному минимуму; для неизвестных лотов подбираются точные целевые роллы в сотых выше минимума, но показанная сборка остаётся допустимой на минимуме. Известные проценты не меняются; это план, а не гарантия рынка.'
+                : 'Сборка выбирается и проверяется на гарантированном минимуме; для неизвестных лотов подбираются точные целевые роллы в сотых выше минимума. Показанная сборка остаётся допустимой на минимуме; это план, а не гарантия рынка.';
+        } else {
+            percentHint.textContent = isQuality
+                ? 'Max Quality выбирает сборку MILP по максимуму тира, затем для неизвестных лотов подбираются точные целевые роллы в сотых. Если план невозможен, показывается исходный максимум тира. Известные проценты не меняются; это план, а не гарантия рынка.'
+                : 'Известные проценты не меняются. Для неизвестных лотов поиск стартует от максимума тира и подбирает точные целевые роллы в сотых, чтобы сборка прошла по носимости и лимитам. Это план, а не гарантия рынка.';
+        }
     } else if (percentMode === 'minimum') {
         percentHint.textContent = 'Известный процент лота сохраняется; минимальный процент качества применяется только к неизвестным процентам. Это не гарантия характеристик и носимости при всех возможных процентах.';
     } else if (percentMode === 'midpoint') {

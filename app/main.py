@@ -186,7 +186,7 @@ def api_builds(
     unknown_percent: str | None = Query(None, pattern="^(minimum|midpoint|maximum)$",
         description="Point used only for unknown quality percentages: minimum (guarantee), midpoint (expected) or maximum (optimistic); known lot percentages stay actual"),
     guaranteed_carryable: bool = Query(False, description="Only builds carryable at MAX art% of tier"),
-    roll_optimize: bool = Query(False, description="Plan exact hundredth rolls for unknown percentages; starts at tier maximum and lowers only when needed"),
+    roll_optimize: bool = Query(False, description="Plan exact hundredth rolls for unknown percentages; maximum/midpoint start at tier maximum, minimum keeps the guaranteed minimum baseline"),
     exclude: str | None = Query(None, description='JSON: ["y5ro"] — item_ids to exclude from builds'),
     prompt_text: str | None = Query(None, description="Original natural language prompt from AI parser"),
     armor_id: str | None = Query(None, description="Armor ID (e.g. rwgmg for Гончий). Stats added to builds."),
@@ -226,12 +226,13 @@ def api_builds(
         order = json.loads(priority_order) if priority_order else None
         scales = json.loads(objective_scales) if objective_scales else None
         armor_list = json.loads(armor_ids) if armor_ids else None
-        from ._quality_scenario import resolve_mode
+        from ._quality_scenario import resolve_mode, roll_baseline
         unknown_mode = resolve_mode(conservative, unknown_percent)
         if roll_optimize and min_budget:
             raise ValueError('roll_optimize is not supported with min_budget')
         if roll_optimize and guaranteed_carryable:
             raise ValueError('roll_optimize cannot be combined with guaranteed_carryable')
+        effective_unknown = roll_baseline(unknown_mode, roll_optimize)
         if armor_list is not None and (not isinstance(armor_list, list) or not armor_list or
                                       any(a is not None and not isinstance(a, str) for a in armor_list)):
             raise ValueError("armor_ids must be a nonempty JSON list of IDs or null")
@@ -349,10 +350,10 @@ def api_builds(
             "allow_duplicates": allow_duplicates,
             "min_budget": min_budget,
             "conservative": unknown_mode == 'minimum',
-            "unknown_percent": 'maximum' if roll_optimize else unknown_mode,
+            "unknown_percent": effective_unknown,
             "requested_unknown_percent": unknown_mode,
             "roll_optimize": roll_optimize,
-            "roll_optimize_baseline": 'maximum' if roll_optimize else None,
+            "roll_optimize_baseline": effective_unknown if roll_optimize else None,
             "exclude": exclude_list,
             "prompt_text": prompt_text or "",
             "armor_id": armor_id, "armor_ids": armor_list, "armor_level": armor_level,
@@ -398,10 +399,10 @@ def api_builds(
         "owned_count": len(owned_list),
         "exclude": exclude_list,
         "conservative": unknown_mode == 'minimum',
-        "unknown_percent": 'maximum' if roll_optimize else unknown_mode,
+        "unknown_percent": effective_unknown,
         "requested_unknown_percent": unknown_mode,
         "roll_optimize": roll_optimize,
-        "roll_optimize_baseline": 'maximum' if roll_optimize else None,
+        "roll_optimize_baseline": effective_unknown if roll_optimize else None,
         "roll_plan_search": next((b.roll_plan_search for b in builds if b.roll_plan_search), None),
         "allow_duplicates": allow_duplicates,
         "carryable_only": carryable_only,

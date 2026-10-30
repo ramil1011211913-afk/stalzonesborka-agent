@@ -1564,19 +1564,18 @@ def build_artifact_sets(
     minimum, midpoint (expected) or maximum. Known stored percentages stay
     actual. ``conservative=True`` is the backward-compatible minimum alias.
     """
-    from ._quality_scenario import percent_views, resolve_mode
+    from ._quality_scenario import percent_views, resolve_mode, roll_baseline
     requested_mode = resolve_mode(conservative, unknown_percent)
-    if roll_optimize:
-        if guaranteed_carryable:
-            raise ValueError('roll_optimize cannot be combined with guaranteed_carryable')
-        # Start from the optimistic tier maximum, then lower only where the
-        # fixed-set planner must.  Known percentages remain actual.  Max
-        # Quality prepares the same maximum baseline and plans its winner
-        # after the selection MILP.
-        mode = 'maximum'
-    else:
-        mode = requested_mode
+    if roll_optimize and guaranteed_carryable:
+        raise ValueError('roll_optimize cannot be combined with guaranteed_carryable')
+    # Maximum and midpoint roll planning starts from the optimistic tier
+    # maximum, then lowers only where the fixed-set planner must.  A minimum
+    # request is a guarantee: it stays on the minimum baseline, and the plan
+    # may only offer higher target rolls without replacing that build.  Known
+    # percentages remain actual in every case.
+    mode = roll_baseline(requested_mode, roll_optimize)
     scenario = mode != 'maximum'
+    roll_from_maximum = bool(roll_optimize and not scenario)
     from ._survivability import validate as validate_survivability
     validate_survivability(priorities, min_thresholds, max_thresholds, max_quality=_quality_context is not None, mode=optimization_mode)
     _request_started = time.monotonic()
@@ -1879,8 +1878,14 @@ def build_artifact_sets(
     _rescue_complete = True
 
     def _pool_valid(candidate):
-        """Search-pool validity; roll-aware search defers carry/max to planning."""
-        if roll_optimize:
+        """Search-pool validity.
+
+        Maximum/midpoint roll-aware search defers carry/max to planning: the
+        planner may lower unknown rolls for a strong set.  A minimum request
+        cannot be repaired by lowering (the build is already at the minimum),
+        so it must satisfy the full request at that point before planning.
+        """
+        if roll_from_maximum:
             return _final_valid(candidate, effective_budget, min_thresholds, None,
                                 False, False, allow_duplicates)
         return _final_valid(candidate, effective_budget, min_thresholds, max_thresholds,
@@ -2094,13 +2099,15 @@ def build_artifact_sets(
                 engine_maximum["__guaranteed_" + key] = target
         # Roll-aware search deliberately lets infeasible-at-max builds through
         # the candidate engine; the fixed-set planner lowers unknown rolls and
-        # the original constraints are enforced again after planning.
+        # the original constraints are enforced again after planning.  A
+        # minimum baseline has no lower roll to plan down to, so it keeps the
+        # ordinary carry/max pruning and full validity.
         _search_require_carry = ((carryable_only or guaranteed_carryable)
-                                 and not roll_optimize)
-        _search_max_thresholds = None if roll_optimize else engine_maximum
+                                 and not roll_from_maximum)
+        _search_max_thresholds = None if roll_from_maximum else engine_maximum
         # User-visible max thresholds are checked after planning.  The engine
         # value above may also contain internal guaranteed-carry keys.
-        _post_max_thresholds = None if roll_optimize else max_thresholds
+        _post_max_thresholds = None if roll_from_maximum else max_thresholds
         # Choose search engine: beam search for large pools (n>100), numba for small k>=4
         _n_cand = len(_numba_search_candidates)
         _use_beam = _n_cand > 100 or _beam_search_fn is not None or min_budget
@@ -2115,7 +2122,7 @@ def build_artifact_sets(
             # Enabled when the user set explicit stat constraints and we're doing
             # a balanced search (not min_budget / lexicographic).
             _constraint_lookahead = (
-                bool(min_thresholds or (max_thresholds and not roll_optimize))
+                bool(min_thresholds or (max_thresholds and not roll_from_maximum))
                 and not min_budget
                 and optimization_mode == "balanced"
             )
@@ -2507,7 +2514,8 @@ def build_artifact_sets(
         from ._roll_plan import optimize_pool
         candidates, roll_plan_search = optimize_pool(
             candidates, objective, min_thresholds, max_thresholds,
-            carry=carryable_only, duplicates=allow_duplicates, limit=200)
+            carry=carryable_only, duplicates=allow_duplicates, limit=200,
+            baseline=mode, plan_feasible=bool(scenario))
         # The planner works on the optimistic baseline; enforce the original
         # request constraints once more on the planned result.
         candidates = [b for b in candidates
@@ -2615,7 +2623,7 @@ def build_artifact_sets(
     result = _ordinary_result(result, _rescue_profiles, _rescue_complete, effective_budget,
                               min_thresholds, max_thresholds, carryable_only, guaranteed_carryable,
                                allow_duplicates, priorities, objective, region, search_request, primary_pool=pool,
-                               refine_lexicographic=(_beam_search_fn is None and not roll_optimize))
+                               refine_lexicographic=(_beam_search_fn is None and not roll_from_maximum))
     for b in result:
         _warned_ids: set[str] = set()
         for a in b.artifacts:

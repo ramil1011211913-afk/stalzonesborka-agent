@@ -39,6 +39,22 @@ def scenario_active(mode):
     return mode in ('minimum', 'midpoint')
 
 
+def roll_baseline(mode, roll_optimize=False):
+    """Point used to select and check a build when roll planning is enabled.
+
+    Maximum and midpoint requests keep the historical optimistic maximum
+    baseline: the planner may lower unknown rolls to make the fixed set fit.
+    A minimum request is a guarantee, not an optimistic target.  It must be
+    selected and checked at the minimum, so roll planning may only offer
+    higher target rolls while the displayed build stays valid at the minimum.
+    """
+    if mode not in UNKNOWN_PERCENT_MODES:
+        raise ValueError("unknown_percent must be one of: minimum, midpoint, maximum")
+    if not roll_optimize:
+        return mode
+    return 'minimum' if mode == 'minimum' else 'maximum'
+
+
 def percent_known(raw, stored=None, quality=None, art_percent=None):
     """Whether a physical percentage came from a real quality roll.
 

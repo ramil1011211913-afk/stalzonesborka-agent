@@ -524,11 +524,17 @@ def _planned_option(option, percent, container, variable):
 
 def optimize_build(build, objective, minimum=None, maximum=None, carry=True,
                    duplicates=False, time_limit=MAX_SECONDS, container=None,
-                   return_plan=False):
+                   return_plan=False, keep_baseline=False, baseline='maximum'):
     """Return a new build with a feasible roll plan, or ``None``.
 
     ``container`` overrides the build's container when the caller has already
     decorated the build and kept the effective (armor-augmented) profile.
+
+    ``keep_baseline`` attaches the plan to the original build without replacing
+    its artifacts or stats.  It is used for minimum-baseline requests: the
+    displayed build must stay the guaranteed minimum build, while the plan may
+    offer higher target rolls.  A planner failure then keeps the valid
+    baseline instead of dropping it.
     """
     from .builder import _final_valid, _process_combo
     effective = container if container is not None else build.container
@@ -536,7 +542,13 @@ def optimize_build(build, objective, minimum=None, maximum=None, carry=True,
     plan = solve(artifacts, effective, objective, minimum, maximum,
                  carry=carry, time_limit=time_limit)
     if not plan.feasible:
+        if keep_baseline:
+            build.roll_plan = plan_failure(plan, build, baseline=baseline)
+            return (build, plan) if return_plan else build
         return (None, plan) if return_plan else None
+    if keep_baseline:
+        build.roll_plan = _plan_dict(plan, build, baseline=baseline)
+        return (build, plan) if return_plan else build
     planned = [_planned_option(option, percent, effective, choice.variable)
                for option, percent, choice in zip(artifacts, plan.percents, plan.choices)]
     checked = []
@@ -551,11 +563,18 @@ def optimize_build(build, objective, minimum=None, maximum=None, carry=True,
         return (None, plan) if return_plan else None
     result._search_request = getattr(build, "_search_request", None)
     result.guaranteed_carryable = False
-    result.roll_plan = _plan_dict(plan, result)
+    result.roll_plan = _plan_dict(plan, result, baseline=baseline)
     return (result, plan) if return_plan else result
 
 
-def _plan_dict(plan, build):
+def _plan_dict(plan, build, *, baseline='maximum'):
+    note = ("Целевые роллы для неизвестных процентов в сотых. "
+            "Известные проценты и хранилище не меняются; это план, а не гарантия рынка.")
+    if baseline == 'minimum':
+        note = ("Целевые роллы для неизвестных процентов в сотых. "
+                "Сборка проверена на гарантированном минимуме; цель может быть выше, "
+                "но гарантия остаётся на минимуме. Известные проценты и хранилище "
+                "не меняются; это план, а не гарантия рынка.")
     return dict(
         enabled=True,
         exact_hundredths=True,
@@ -565,8 +584,12 @@ def _plan_dict(plan, build):
         message=plan.message,
         objective_value=round(plan.objective_value, 6),
         baseline_objective=round(plan.baseline_objective, 6),
+        baseline=baseline,
+        minimum_guaranteed=(baseline == 'minimum'),
         carryable=bool(build.carryable),
+        plan_carryable=bool(plan.carryable),
         warnings=list(build.carryability_warnings),
+        plan_warnings=list(plan.warnings),
         known_percent_preserved=True,
         artifacts=[
             dict(index=choice.index, item_id=choice.item_id, name_ru=choice.name_ru,
@@ -580,13 +603,17 @@ def _plan_dict(plan, build):
                  changed=choice.changed)
             for choice in plan.choices
         ],
-        note=("Целевые роллы для неизвестных процентов в сотых. "
-              "Известные проценты и хранилище не меняются; это план, а не гарантия рынка."),
+        note=note,
     )
 
 
-def plan_failure(plan, build):
+def plan_failure(plan, build, *, baseline='maximum'):
     """JSON-safe description of a plan that could not be applied."""
+    notes = {
+        'maximum': "План роллов не найден для этой сборки; показан исходный максимум тира.",
+        'minimum': "План роллов не найден; показана сборка, допустимая на гарантированном минимуме.",
+        'midpoint': "План роллов не найден; показана сборка, рассчитанная по середине тира.",
+    }
     return dict(
         enabled=True,
         exact_hundredths=True,
@@ -594,17 +621,30 @@ def plan_failure(plan, build):
         reason=plan.reason,
         solver_status=plan.solver_status,
         message=plan.message,
+        baseline=baseline,
+        minimum_guaranteed=(baseline == 'minimum'),
         carryable=bool(build.carryable),
+        plan_carryable=bool(plan.carryable),
         warnings=list(build.carryability_warnings),
+        plan_warnings=list(plan.warnings),
         known_percent_preserved=True,
         artifacts=[],
-        note="План роллов не найден для этой сборки; показан исходный максимум тира.",
+        note=notes.get(baseline, notes['maximum']),
     )
 
 
 def optimize_pool(builds, objective, minimum=None, maximum=None, carry=True,
-                  duplicates=False, limit=200, time_limit=MAX_SECONDS):
-    """Optimize only builds that need a roll plan, keeping fixed-feasible ones."""
+                  duplicates=False, limit=200, time_limit=MAX_SECONDS,
+                  baseline='maximum', plan_feasible=False):
+    """Optimize only builds that need a roll plan, keeping fixed-feasible ones.
+
+    ``plan_feasible`` is used for minimum-baseline requests.  There the
+    baseline build is already the guaranteed result, so every candidate is
+    offered an optional higher-roll plan and the original build is kept when
+    the planner cannot improve it.  Without it, only builds that fail the
+    fixed constraints are planned, preserving the historical maximum-baseline
+    behavior.
+    """
     from .builder import _final_valid
     minimum = minimum or {}
     maximum = maximum or {}
@@ -628,7 +668,7 @@ def optimize_pool(builds, objective, minimum=None, maximum=None, carry=True,
             continue
         seen.add(key)
         fixed_ok = _final_valid(build, math.inf, minimum, maximum, carry, False, duplicates)
-        if fixed_ok:
+        if fixed_ok and not plan_feasible:
             kept.append(build)
         else:
             needs.append(build)
@@ -636,17 +676,27 @@ def optimize_pool(builds, objective, minimum=None, maximum=None, carry=True,
     attempted = 0
     optimized = 0
     failed = 0
+    changed = 0
     for build in needs[:max(0, int(limit))]:
         attempted += 1
-        result = optimize_build(build, objective, minimum, maximum, carry,
-                                duplicates, time_limit)
-        if result is None:
+        result, plan = optimize_build(
+            build, objective, minimum, maximum, carry, duplicates, time_limit,
+            return_plan=True, keep_baseline=plan_feasible, baseline=baseline)
+        if result is None or (plan_feasible and not plan.feasible):
             failed += 1
+            if result is not None:
+                kept.append(result)
         else:
             optimized += 1
             kept.append(result)
+            if any(choice.changed for choice in plan.choices):
+                changed += 1
+    if plan_feasible:
+        # Builds beyond the planning limit are still valid minimum builds.
+        kept.extend(needs[max(0, int(limit)):])
     return kept, dict(enabled=True, exact_hundredths=True, attempted=attempted,
-                      optimized=optimized, failed=failed,
+                      optimized=optimized, failed=failed, changed=changed,
                       skipped=max(0, len(needs) - attempted),
                       limit=int(limit), carry=bool(carry),
+                      baseline=baseline, plan_feasible=bool(plan_feasible),
                       known_percent_preserved=True)

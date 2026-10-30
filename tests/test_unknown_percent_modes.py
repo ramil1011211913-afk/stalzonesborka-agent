@@ -92,6 +92,19 @@ def test_mode_resolution_is_explicit_and_backward_compatible():
         scenario.resolve_mode(False, 'average')
 
 
+def test_roll_baseline_keeps_minimum_guarantee():
+    # Minimum is a guarantee: roll planning may not silently replace it with
+    # the optimistic maximum baseline.
+    assert scenario.roll_baseline('minimum', True) == 'minimum'
+    assert scenario.roll_baseline('minimum', False) == 'minimum'
+    # Midpoint and maximum keep the historical optimistic planning baseline.
+    assert scenario.roll_baseline('midpoint', True) == 'maximum'
+    assert scenario.roll_baseline('maximum', True) == 'maximum'
+    assert scenario.roll_baseline('midpoint', False) == 'midpoint'
+    with pytest.raises(ValueError):
+        scenario.roll_baseline('average', True)
+
+
 @pytest.mark.parametrize('mode,scope,expected', [
     ('minimum', 'quality_minimum_for_unknown_candidates', 115.0),
     ('midpoint', 'quality_midpoint_for_unknown_candidates', 122.5),

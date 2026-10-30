@@ -34,7 +34,7 @@ class QualityResults(list):
             'memory_limit': 'Достигнут лимит памяти отдельного процесса.',
             'profile_limit': 'Слишком много контейнерных и броневых профилей. Выберите конкретный контейнер или меньше альтернатив.',
             'complete_full_rank': 'Все цели и сравнение по цене подтверждены в указанном scope.',
-            'roll_plan_applied': 'Сборка выбрана MILP по максимуму тира; после планирования роллов показан допустимый вариант.',
+            'roll_plan_applied': 'Сборка выбрана MILP по выбранной точке тира; после планирования роллов показан допустимый вариант.',
             'survivability_numeric_limit': 'Производные характеристики выходят за поддерживаемый численный диапазон.',
             'survivability_matrix_limit': 'Полная модель производных характеристик не помещается в допустимый размер. Эвристическое усечение не применялось.',
             'unsupported_survivability_lexicographic': 'Для производных характеристик поддержан только Balanced в Max Quality / Deep.',
@@ -55,7 +55,7 @@ class QualityResults(list):
         self.unknown_percent = mode
         if roll_optimize:
             self.search_status['roll_optimize'] = True
-            self.search_status['roll_optimize_baseline'] = 'maximum'
+            self.search_status['roll_optimize_baseline'] = mode
             self.search_status['requested_unknown_percent'] = (
                 requested_unknown_percent or mode)
         if scenario_active(mode) or unknown_percent is not None:
@@ -73,14 +73,14 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
     from . import builder as b
     from ._feasibility_fallback import current_candidates
     from ._physical_items import physical_key
-    from ._quality_scenario import resolve_mode
+    from ._quality_scenario import resolve_mode, roll_baseline
     mode = resolve_mode(bool(request.get('conservative')), request.get('unknown_percent'))
     roll_optimize = bool(request.get('roll_optimize'))
     requested_mode = mode
-    if roll_optimize:
-        # Roll planning starts from the optimistic tier maximum.  Known rolls
-        # stay actual; only unknown percentages may be planned down.
-        mode = 'maximum'
+    # Maximum/midpoint roll planning starts from the optimistic tier maximum.
+    # A minimum request is a guarantee and keeps the minimum baseline; the
+    # planner may only offer higher targets for that fixed minimum build.
+    mode = roll_baseline(mode, roll_optimize)
     request['unknown_percent'] = mode
     scenario = mode != 'maximum'
     start = time.monotonic()
@@ -276,40 +276,48 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
             from . import _roll_plan
             target = winner[0]
             effective_container = getattr(target, '_quality_effective_container', None)
+            keep_baseline = (mode == 'minimum')
             try:
                 planned, roll_plan = _roll_plan.optimize_build(
                     target, objective, minimum, maximum, carry=carry,
                     duplicates=duplicates, container=effective_container,
-                    return_plan=True)
+                    return_plan=True, keep_baseline=keep_baseline, baseline=mode)
             except Exception as error:  # Planner failure must not lose the MILP winner.
                 planned, roll_plan = None, None
+                note = ('План роллов не найден; показана сборка, допустимая на гарантированном минимуме.'
+                        if keep_baseline else
+                        'План роллов не найден для этой сборки; показан исходный максимум тира.')
                 target.roll_plan = dict(
                     enabled=True, exact_hundredths=True, status='error',
                     reason='planner_error', solver_status=None,
-                    message=str(error)[:300], carryable=bool(target.carryable),
-                    warnings=list(target.carryability_warnings),
-                    known_percent_preserved=True, artifacts=[],
-                    note='План роллов не найден для этой сборки; показан исходный максимум тира.')
+                    message=str(error)[:300], baseline=mode,
+                    minimum_guaranteed=keep_baseline,
+                    carryable=bool(target.carryable), plan_carryable=False,
+                    warnings=list(target.carryability_warnings), plan_warnings=[],
+                    known_percent_preserved=True, artifacts=[], note=note)
+            plan_ok = bool(planned is not None and roll_plan is not None and roll_plan.feasible)
             changed = False
             if planned is not None:
-                b._decorate_armor(planned)
-                planned._quality_effective_container = effective_container
+                if not keep_baseline:
+                    b._decorate_armor(planned)
+                    planned._quality_effective_container = effective_container
                 changed = any(item.get('changed')
                               for item in (planned.roll_plan or {}).get('artifacts', ()))
                 winner[0] = planned
-                if changed and state == 'OPTIMAL':
+                if changed and state == 'OPTIMAL' and not keep_baseline:
                     # The set is the proven maximum-tier winner, but the shown
                     # roll targets are a feasible plan, not the same proof.
                     state = 'FEASIBLE'
                     reason = 'roll_plan_applied'
             elif roll_plan is not None:
-                target.roll_plan = _roll_plan.plan_failure(roll_plan, target)
+                target.roll_plan = _roll_plan.plan_failure(roll_plan, target, baseline=mode)
             winner[0].roll_plan_search = dict(
                 enabled=True, exact_hundredths=True, attempted=1,
-                optimized=1 if planned is not None else 0,
-                failed=0 if planned is not None else 1, skipped=0, limit=1,
+                optimized=1 if plan_ok else 0,
+                failed=0 if plan_ok else 1, skipped=0, limit=1,
                 carry=bool(carry), known_percent_preserved=True,
-                mode='max_quality', baseline='maximum', changed=bool(changed))
+                mode='max_quality', baseline=mode, changed=bool(changed),
+                keep_baseline=keep_baseline)
         for build in winner:
             for option in build.artifacts:
                 hidden = context.get('hidden_effects', {}).get(option.item_id)
@@ -345,10 +353,10 @@ def build_max_quality_sets(budget, *, quality_timeout=limits.DEFAULT_SECONDS, de
         raise ValueError('Private search hooks are not quality request parameters')
     if request.get('min_budget') or request.get('optimization_mode', 'balanced') not in ('balanced', 'lexicographic'):
         raise ValueError('Max quality supports balanced or lexicographic objectives, not min_budget')
-    from ._quality_scenario import resolve_mode
+    from ._quality_scenario import resolve_mode, roll_baseline
     requested_mode = resolve_mode(bool(request.get('conservative')), request.get('unknown_percent'))
     roll_optimize = bool(request.get('roll_optimize'))
-    mode = 'maximum' if roll_optimize else requested_mode
+    mode = roll_baseline(requested_mode, roll_optimize)
     def response(reason, models=()):
         result = QualityResults(reason=reason, models=models, unknown_percent=mode,
                                 requested_unknown_percent=(requested_mode if roll_optimize else None),

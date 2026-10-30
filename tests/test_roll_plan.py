@@ -341,27 +341,128 @@ def test_optimize_build_attaches_plan_and_keeps_known_roll():
 
 def test_max_quality_attaches_plan_without_weakening_milp_winner(monkeypatch, tmp_path):
     from tests.test_max_quality import call
-    from tests.test_unknown_percent_modes import UNKNOWN_LOT, helium_market
+    from tests.test_unknown_percent_modes import KNOWN_LOT, KNOWN_PERCENT, helium_market
     helium_market(monkeypatch, tmp_path)
     result = call(budget=3_000_000, roll_optimize=True,
                   unknown_percent='minimum')
     assert result and result.search_status['state'] == 'OPTIMAL', result.search_status
-    assert result.unknown_percent == 'maximum'
+    assert result.unknown_percent == 'minimum'
     assert result.search_status['requested_unknown_percent'] == 'minimum'
-    assert result.search_status['roll_optimize_baseline'] == 'maximum'
+    assert result.search_status['roll_optimize_baseline'] == 'minimum'
     build = result[0]
-    assert build.artifacts[0].auction_lot_id == UNKNOWN_LOT
-    assert build.artifacts[0].art_percent == 130.0
+    # The guaranteed minimum build is the known 117.02% roll, not the
+    # unknown lot's optimistic 130% target.
+    assert build.artifacts[0].auction_lot_id == KNOWN_LOT
+    assert build.artifacts[0].art_percent == KNOWN_PERCENT
     assert build.roll_plan and build.roll_plan['enabled']
     assert build.roll_plan['exact_hundredths']
     assert build.roll_plan['known_percent_preserved']
+    assert build.roll_plan['baseline'] == 'minimum'
+    assert build.roll_plan['minimum_guaranteed'] is True
     assert build.roll_plan_search['mode'] == 'max_quality'
-    assert build.roll_plan_search['baseline'] == 'maximum'
+    assert build.roll_plan_search['baseline'] == 'minimum'
+    assert build.roll_plan_search['keep_baseline'] is True
     assert build.roll_plan_search['optimized'] == 1
     assert build.roll_plan_search['failed'] == 0
     choice = build.roll_plan['artifacts'][0]
-    assert choice['variable'] and not choice['changed']
+    assert not choice['variable'] and not choice['changed']
+    assert choice['percent'] == pytest.approx(KNOWN_PERCENT, abs=0.01)
+
+
+def test_max_quality_minimum_roll_plan_keeps_minimum_build(monkeypatch, tmp_path):
+    from tests.test_max_quality import call
+    from tests.test_unknown_percent_modes import UNKNOWN_LOT, SPEED, helium_market
+    helium_market(monkeypatch, tmp_path, known=False)
+    result = call(budget=3_000_000, roll_optimize=True,
+                  unknown_percent='minimum')
+    assert result and result.search_status['state'] == 'OPTIMAL', result.search_status
+    assert result.unknown_percent == 'minimum'
+    assert result.search_status['roll_optimize_baseline'] == 'minimum'
+    build = result[0]
+    # The displayed build stays at the guaranteed minimum; the plan is only a
+    # higher target and must not replace the minimum statistics.
+    assert build.artifacts[0].auction_lot_id == UNKNOWN_LOT
+    assert build.artifacts[0].art_percent == 115.0
+    assert build.combined_stats[SPEED] == pytest.approx(4.485)
+    assert build.roll_plan['baseline'] == 'minimum'
+    assert build.roll_plan['minimum_guaranteed'] is True
+    choice = build.roll_plan['artifacts'][0]
+    assert choice['variable'] and choice['changed']
     assert choice['percent'] == 130.0
+    assert build.roll_plan_search['changed'] is True
+    assert build.roll_plan_search['keep_baseline'] is True
+    assert result.search_status['state'] == 'OPTIMAL'
+
+
+def test_ordinary_minimum_roll_plan_keeps_minimum_build(monkeypatch, tmp_path):
+    from tests.test_unknown_percent_modes import UNKNOWN_LOT, SPEED, helium_market
+    helium_market(monkeypatch, tmp_path, known=False)
+    result = b.build_artifact_sets(
+        3_000_000, tolerance_pct=0, priorities={SPEED: 10}, region='EU',
+        unknown_percent='minimum', conservative=True, roll_optimize=True, top_n=1)
+    assert result
+    build = result[0]
+    assert build.artifacts[0].auction_lot_id == UNKNOWN_LOT
+    assert build.artifacts[0].art_percent == 115.0
+    assert build.combined_stats[SPEED] == pytest.approx(4.485)
+    assert build.roll_plan['baseline'] == 'minimum'
+    assert build.roll_plan['minimum_guaranteed'] is True
+    choice = build.roll_plan['artifacts'][0]
+    assert choice['variable'] and choice['changed']
+    assert choice['percent'] == 130.0
+    assert build.roll_plan_search['baseline'] == 'minimum'
+    assert build.roll_plan_search['plan_feasible'] is True
+    assert build.roll_plan_search['changed'] >= 1
+
+
+def test_ordinary_minimum_roll_plan_does_not_outrank_guaranteed_known_roll(monkeypatch, tmp_path):
+    from tests.test_unknown_percent_modes import KNOWN_LOT, SPEED, helium_market
+    helium_market(monkeypatch, tmp_path)
+    result = b.build_artifact_sets(
+        3_000_000, tolerance_pct=0, priorities={SPEED: 10}, region='EU',
+        unknown_percent='minimum', conservative=True, roll_optimize=True, top_n=1)
+    assert result
+    # The unknown lot's higher plan target must not replace the better
+    # guaranteed minimum build in the ranking.
+    assert result[0].artifacts[0].auction_lot_id == KNOWN_LOT
+    assert result[0].artifacts[0].art_percent == pytest.approx(117.019983625)
+
+
+def test_failed_minimum_plan_keeps_valid_minimum_build(monkeypatch, tmp_path):
+    from tests.test_max_quality import call as quality_call
+    from tests.test_unknown_percent_modes import UNKNOWN_LOT, SPEED, helium_market
+    helium_market(monkeypatch, tmp_path, known=False)
+
+    def failed(*args, **kwargs):
+        return plan.Plan(False, 'infeasible', 'solver_infeasible', (), (), {},
+                         float('-inf'), False, [], {}, float('-inf'), 2,
+                         'test failure')
+
+    monkeypatch.setattr(plan, 'solve', failed)
+    result = b.build_artifact_sets(
+        3_000_000, tolerance_pct=0, priorities={SPEED: 10}, region='EU',
+        unknown_percent='minimum', conservative=True, roll_optimize=True, top_n=1)
+    assert result
+    build = result[0]
+    assert build.artifacts[0].auction_lot_id == UNKNOWN_LOT
+    assert build.artifacts[0].art_percent == 115.0
+    assert build.combined_stats[SPEED] == pytest.approx(4.485)
+    assert build.roll_plan['baseline'] == 'minimum'
+    assert build.roll_plan['status'] == 'infeasible'
+    assert build.roll_plan['artifacts'] == []
+    assert build.roll_plan_search['failed'] == 1
+    assert build.roll_plan_search['plan_feasible'] is True
+
+    result = quality_call(budget=3_000_000, roll_optimize=True,
+                          unknown_percent='minimum')
+    assert result and result.search_status['state'] == 'OPTIMAL', result.search_status
+    build = result[0]
+    assert build.artifacts[0].art_percent == 115.0
+    assert build.combined_stats[SPEED] == pytest.approx(4.485)
+    assert build.roll_plan['baseline'] == 'minimum'
+    assert build.roll_plan['status'] == 'infeasible'
+    assert build.roll_plan_search['failed'] == 1
+    assert build.roll_plan_search['keep_baseline'] is True
 
 
 def test_max_quality_changed_plan_downgrades_proof_to_feasible(monkeypatch, tmp_path):
@@ -398,7 +499,16 @@ def test_api_forwards_roll_optimize(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert seen and seen[0]['roll_optimize'] is True
     assert response.json()['roll_optimize'] is True
+    assert response.json()['unknown_percent'] == 'maximum'
     assert response.json()['roll_optimize_baseline'] == 'maximum'
+
+    response = client.get('/api/builds', params={
+        'budget': 10, 'roll_optimize': 'true', 'conservative': 'true'})
+    assert response.status_code == 200
+    assert seen[-1]['unknown_percent'] == 'minimum'
+    assert response.json()['unknown_percent'] == 'minimum'
+    assert response.json()['requested_unknown_percent'] == 'minimum'
+    assert response.json()['roll_optimize_baseline'] == 'minimum'
 
 
 @pytest.mark.parametrize('params', [
@@ -431,3 +541,13 @@ def test_api_forwards_roll_optimize_to_max_quality(monkeypatch, tmp_path):
     assert seen and seen[0]['roll_optimize'] is True
     assert response.json()['roll_optimize'] is True
     assert response.json()['unknown_percent'] == 'maximum'
+    assert response.json()['roll_optimize_baseline'] == 'maximum'
+
+    response = client.get('/api/builds', params={
+        'budget': 10, 'max_quality': 'true', 'roll_optimize': 'true',
+        'conservative': 'true'})
+    assert response.status_code == 200, response.text
+    assert seen[-1]['unknown_percent'] == 'minimum'
+    assert response.json()['unknown_percent'] == 'minimum'
+    assert response.json()['requested_unknown_percent'] == 'minimum'
+    assert response.json()['roll_optimize_baseline'] == 'minimum'
