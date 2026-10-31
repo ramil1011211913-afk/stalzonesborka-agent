@@ -1661,39 +1661,14 @@ def build_artifact_sets(
     elif container_id:
         containers = [c for c in all_containers if c.item_id == container_id]
     else:
-        if min_budget or _quality_context is not None:
-            # Slot count does not dominate effectiveness or container bonuses.
-            # Visit every allowed profile; deadline skips remain explicitly unknown.
-            containers = sorted(all_containers, key=lambda c: (
-                not any(key in c.bonus_stats for key in priorities),
-                -c.slots, -c.inner_protection, -c.effectiveness, c.item_id))
-        else:
-            def _container_sort_key(c):
-                has_prio_bonus = False
-                if c.bonus_stats:
-                    for pid in priorities:
-                        if pid in c.bonus_stats:
-                            has_prio_bonus = True
-                            break
-                return (has_prio_bonus, c.inner_protection, c.effectiveness, c.slots)
-            containers = sorted(all_containers, key=_container_sort_key, reverse=True)
-            containers = containers[:5]  # cap — avoid searching all 54 containers
-
-
-    containers = _armor_containers(containers, armors)
-    if _quality_context is not None and len(containers) > _quality_context['max_profiles']:
-        _quality_context['error'] = 'profile_limit'
-        return []
-    if guaranteed_carryable:
-        effective_containers = []
-        for current in containers:
-            effective = replace(current)
-            effective._base_container = getattr(current, "_base_container", current)
-            effective._armor = getattr(current, "_armor", None)
-            effective._guaranteed_search = True
-            effective_containers.append(effective)
-        containers = effective_containers
-
+        # Deferred: Max Quality auto-selection needs the prepared candidate
+        # pool; ordinary search keeps its existing top-5 heuristic.
+        containers = None
+    if containers is not None:
+        containers = _armor_containers(containers, armors)
+        if _quality_context is not None and len(containers) > _quality_context['max_profiles']:
+            _quality_context['error'] = 'profile_limit'
+            return []
     # Max Quality opts into full physical loading; ordinary providers are unchanged.
     _quality_load = {}
     if _quality_context is not None:
@@ -1825,6 +1800,65 @@ def build_artifact_sets(
         _quality_context['candidate_audit']['owned_candidates'] = len(owned_opts)
     if _quality_context is not None and scenario:
         owned_opts = percent_views(owned_opts, priorities, mode)
+
+    if containers is None:
+        if _quality_context is not None:
+            if _quality_context.get('container_selection') == 'auto':
+                from ._quality_auto import select_auto_containers
+                excluded = set(exclude_item_ids or []) | set(EXCLUDED_ARTIFACTS)
+                selection_pool = [
+                    o for o in options
+                    if o.buyout_price <= effective_budget
+                    and not o.is_owned and o.item_id not in excluded
+                ] + owned_opts
+                armor_count = max(1, len(armors))
+                requested_limit = max(1, _quality_context['max_profiles'] // armor_count)
+                containers, auto_selection = select_auto_containers(
+                    all_containers, selection_pool, priorities,
+                    minimum=min_thresholds, maximum=max_thresholds,
+                    requested_limit=requested_limit, armor_profiles=armor_count,
+                    candidate_limit=_quality_context.get('max_total_candidates'),
+                    profile_limit=_quality_context['max_profiles'])
+                _quality_context['auto_selection'] = auto_selection
+                if not containers:
+                    _quality_context['error'] = 'auto_no_candidates'
+                    return []
+            else:
+                # Preserve the pre-auto Max Quality behavior for callers that
+                # explicitly disable auto but omit both container selectors.
+                containers = sorted(all_containers, key=lambda c: (
+                    not any(key in c.bonus_stats for key in priorities),
+                    -c.slots, -c.inner_protection, -c.effectiveness, c.item_id))
+        elif min_budget:
+            # Slot count does not dominate effectiveness or container bonuses.
+            # Visit every allowed profile; deadline skips remain explicitly unknown.
+            containers = sorted(all_containers, key=lambda c: (
+                not any(key in c.bonus_stats for key in priorities),
+                -c.slots, -c.inner_protection, -c.effectiveness, c.item_id))
+        else:
+            def _container_sort_key(c):
+                has_prio_bonus = False
+                if c.bonus_stats:
+                    for pid in priorities:
+                        if pid in c.bonus_stats:
+                            has_prio_bonus = True
+                            break
+                return (has_prio_bonus, c.inner_protection, c.effectiveness, c.slots)
+            containers = sorted(all_containers, key=_container_sort_key, reverse=True)
+            containers = containers[:5]  # cap — avoid searching all 54 containers
+        containers = _armor_containers(containers, armors)
+        if _quality_context is not None and len(containers) > _quality_context['max_profiles']:
+            _quality_context['error'] = 'profile_limit'
+            return []
+    if guaranteed_carryable:
+        effective_containers = []
+        for current in containers:
+            effective = replace(current)
+            effective._base_container = getattr(current, "_base_container", current)
+            effective._armor = getattr(current, "_armor", None)
+            effective._guaranteed_search = True
+            effective_containers.append(effective)
+        containers = effective_containers
 
     # One immutable normalization for the whole request, before any beam trim.
     stat_max = _fixed_objective_scales(

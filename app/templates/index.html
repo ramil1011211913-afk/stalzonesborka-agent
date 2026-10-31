@@ -51,6 +51,8 @@ header p{color:#888;margin-top:6px;font-size:.9em}
 .tip-row{font-size:.78em;color:#aaa;padding:2px 0;line-height:1.4}
 .loading{text-align:center;padding:30px;color:#888;font-size:1.1em}
 .empty{text-align:center;color:#888;padding:20px}
+.optimality-warning{background:#2b2418;border:1px solid #f0a050;border-left:4px solid #f0a050;border-radius:8px;padding:10px 12px;margin-bottom:10px;color:#f0c070;font-size:.9em;line-height:1.45}
+.optimality-warning b{color:#f0a050}
 .owned-item{background:#0f3460;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;align-items:center;gap:8px;border:1px solid #1a1a4e}
 .owned-item select,.owned-item input{background:#1a1a2e;border:1px solid #1a1a4e;border-radius:4px;color:#e0e0e0;padding:4px 6px;font-size:.8em}
 .owned-item .remove{color:#e94560;cursor:pointer;font-weight:bold}
@@ -805,6 +807,14 @@ async function findBuilds() {
         // Preserve server ordering: balanced, lexicographic and price modes
         // have different ranking keys; the scalar display score is insufficient.
         let html = '';
+        if (d.search_status && d.search_status.backend === 'max_quality_milp' &&
+            d.builds.length > 0 && !d.search_status.optimality_proven) {
+            html += `<div class="optimality-warning" role="alert">
+                <b>Найдена допустимая сборка, но её оптимальность не доказана.</b>
+                Проверены не все выбранные профили — в непроверенных может быть более выгодный вариант.
+                Для более полной проверки включите Deep-поиск (300 с) или выберите конкретный контейнер.
+            </div>`;
+        }
         if (d.search_status) html += `<div role="status" style="color:#f0a050;margin-bottom:8px">${escapeHtml(d.search_status.message)}</div>`;
         if (window._templateNotCarryable && window._templateNotCarryable.length > 0) {
             html += `<div style="background:#3a1a1a;border:1px solid #e94560;border-radius:8px;padding:10px;margin-bottom:10px">

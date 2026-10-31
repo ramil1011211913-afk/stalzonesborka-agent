@@ -33,6 +33,7 @@ class QualityResults(list):
             'cancelled': 'Вычисление отменено.',
             'memory_limit': 'Достигнут лимит памяти отдельного процесса.',
             'profile_limit': 'Слишком много контейнерных и броневых профилей. Выберите конкретный контейнер или меньше альтернатив.',
+            'auto_no_candidates': 'Авто не нашёл ни одного контейнерного профиля для проверки.',
             'complete_full_rank': 'Все цели и сравнение по цене подтверждены в указанном scope.',
             'roll_plan_applied': 'Сборка выбрана MILP по выбранной точке тира; после планирования роллов показан допустимый вариант.',
             'survivability_numeric_limit': 'Производные характеристики выходят за поддерживаемый численный диапазон.',
@@ -42,12 +43,13 @@ class QualityResults(list):
             'restricted_subproblem_infeasible': 'Модель с границей от стартового свидетеля несовместна; это не доказательство несовместности исходной задачи. Свидетель проверяется отдельно.',
         }
         self.search_status = dict(state=state, reason=reason, backend='max_quality_milp', experimental=True,
-            scope='verified_fully_described_prepared_profiles', global_optimality_proven=False,
-            numerical_certificate=True,
+            scope='verified_fully_described_prepared_profiles', container_selection='explicit',
+            global_optimality_proven=False, numerical_certificate=True,
             optimality_proven=state=='OPTIMAL', infeasibility_proven=state=='INFEASIBLE',
             models=list(models), timings=timings or {}, message=state + ': ' + text[state] + ' ' + explanations.get(reason, 'Код завершения: ' + reason),
             limits=dict(seconds=limits.DEFAULT_SECONDS, model_seconds=limits.MODEL_SECONDS,
-                candidates=limits.MAX_CANDIDATES, profiles=limits.MAX_PROFILES, rows=limits.MAX_ROWS,
+                candidates=limits.MAX_CANDIDATES, total_candidates=limits.MAX_TOTAL_CANDIDATES,
+                profiles=limits.MAX_PROFILES, rows=limits.MAX_ROWS,
                 nonzeros=limits.MAX_NONZEROS, nodes=limits.MAX_NODES, worker_memory_bytes=limits.MEMORY_BYTES,
                 simultaneous_heavy_tasks=1))
         from ._quality_scenario import metadata, resolve_mode, scenario_active
@@ -100,6 +102,27 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
                 if k not in ('deadline', 'max_input_candidates')}
             if context['candidate_audit'].get('unknown_exclusions'):
                 result.search_status['message'] += ' Лоты с неизвестными свойствами исключены; сертификат относится только к поддержанному пулу.'
+        auto = context.get('auto_selection')
+        if auto:
+            result.search_status['container_selection'] = 'auto'
+            result.search_status['auto_selection'] = auto
+            result.search_status['scope'] = 'auto_shortlist_verified_prepared_profiles'
+            selected = auto.get('selected_count', 0)
+            considered = auto.get('considered_count', 0)
+            omitted = auto.get('omitted_count', 0)
+            profiles = auto.get('selected_profile_count', selected)
+            armor = auto.get('armor_profiles', 1)
+            if omitted:
+                if armor > 1:
+                    detail = f"{profiles} профилей ({selected} контейнеров × {armor} вариантов брони)"
+                else:
+                    detail = f"{profiles} профилей"
+                note = (f"Авто: выбрано {detail} из {considered} доступных контейнеров "
+                        f"(короткий список по верхней оценке). Сертификат относится только к выбранным профилям; "
+                        f"{omitted} контейнеров не проверялись.")
+            else:
+                note = f"Авто: выбраны все {considered} контейнеров."
+            result.search_status['message'] += ' ' + note
         if primary_only:
             from ._ehp_primary_only import annotate_status
             annotate_status(result.search_status, bool(result))
@@ -126,8 +149,13 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
     with (nullcontext(True) if _market is not None else quality_slot()) as acquired:
         if not acquired:
             return response(reason='quality_worker_busy' if acquired is False else 'quality_worker_unavailable')
+        container_selection = (
+            'auto' if not request.get('container_id') and request.get('container_ids') is None
+            else 'explicit')
         context = dict(deadline=deadline, max_profiles=limits.MAX_PROFILES,
-                       max_input_candidates=limits.MAX_INPUT_CANDIDATES)
+                       max_input_candidates=limits.MAX_INPUT_CANDIDATES,
+                       max_total_candidates=limits.MAX_TOTAL_CANDIDATES,
+                       container_selection=container_selection)
         b.build_artifact_sets(budget, _quality_context=context, **request)
         preparation = time.monotonic()-start
         if _market is not None and _market.changed():
@@ -269,9 +297,11 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
                 models[-1]['conditions']['calculation'] = metadata(mode)
         builds.sort(key=(lambda build:(-build.combined_stats['effective_health'],tuple(sorted(str(physical_key(o)) for o in build.artifacts)))) if primary_only else objective.sort_key)
         winner = builds[:1]
+        incomplete = next((entry for entry in models
+                           if entry.get('state') not in ('OPTIMAL', 'INFEASIBLE')), None)
         state = 'OPTIMAL' if winner and complete else 'FEASIBLE' if winner else 'INFEASIBLE' if models and complete else 'UNKNOWN'
         reason = ('complete_full_rank' if complete and winner else
-                  models[-1].get('reason', 'unknown') if models else 'unknown')
+                  ((incomplete or models[-1]).get('reason', 'unknown') if models else 'unknown'))
         if roll_optimize and winner:
             from . import _roll_plan
             target = winner[0]
@@ -426,7 +456,10 @@ def build_max_quality_sets(budget, *, quality_timeout=limits.DEFAULT_SECONDS, de
             later_stage_reserve_seconds=limits.MODEL_SECONDS, nodes=DEEP_NODE_LIMIT)
     status['attempts'] = history
     status['retry_count'] = max(0, len(history)-1)
-    status['worker_reason'] = (status['models'][-1].get('worker_reason', status['models'][-1].get('reason')) if status['models'] else None)
+    _incomplete = next((entry for entry in status['models']
+                        if entry.get('state') not in ('OPTIMAL', 'INFEASIBLE')), None)
+    _last = _incomplete or (status['models'][-1] if status['models'] else None)
+    status['worker_reason'] = (_last.get('worker_reason', _last.get('reason')) if _last else None)
     status['validation_reason'] = ('market_changed' if status['reason'].startswith('market_') else
         status['models'][-1].get('validation_reason') if status['models'] else None)
     if status['state']=='UNKNOWN' and status['validation_reason'] not in (None, 'passed', 'market_changed'):

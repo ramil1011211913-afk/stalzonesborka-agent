@@ -6,7 +6,9 @@ import math
 MAX_CANDIDATES = 5000
 MAX_INPUT_CANDIDATES = 10000
 MAX_PROFILES = 8
-MAX_TOTAL_CANDIDATES = 20000
+# Eight prepared profiles at the observed ~2.5k-candidate pool need >20k.
+# The cap still bounds total work and is reported explicitly when reached.
+MAX_TOTAL_CANDIDATES = 30000
 MAX_ROWS = 256
 MAX_NONZEROS = 100000
 MAX_NODES = 20000

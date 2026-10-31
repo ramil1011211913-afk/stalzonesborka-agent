@@ -332,11 +332,76 @@ def test_primary_near_bin_boundary_is_not_relaxed_for_cheaper_price(monkeypatch,
     assert result.search_status['state']=='OPTIMAL'
 
 
-def test_profile_limit_does_not_silently_drop_other_containers(monkeypatch,tmp_path):
+def test_auto_container_shortlist_is_bounded_and_reported(monkeypatch,tmp_path):
     market(monkeypatch,tmp_path,slots=1)
     monkeypatch.setattr(b,'load_container_options',lambda r:[container(str(i)) for i in range(9)])
     result=call()
+    assert result and result.search_status['state']=='OPTIMAL'
+    status=result.search_status
+    auto=status['auto_selection']
+    assert status['container_selection']=='auto'
+    assert auto['considered_count']==9
+    assert auto['selected_count']==8
+    assert auto['selected_profile_count']==8
+    assert auto['omitted_count']==1
+    assert auto['omitted']==['8']
+    assert 'Авто' in status['message']
+
+
+def test_ui_warns_when_optimality_is_not_proven():
+    from pathlib import Path
+    html=(Path(b.__file__).parent/'templates/index.html').read_text(encoding='utf8')
+    assert 'class="optimality-warning"' in html
+    assert "d.search_status.backend === 'max_quality_milp'" in html
+    assert 'd.builds.length > 0 && !d.search_status.optimality_proven' in html
+    assert 'role="alert"' in html
+    assert 'Найдена допустимая сборка, но её оптимальность не доказана.' in html
+    assert 'Deep-поиск (300 с)' in html
+
+
+def test_explicit_profile_limit_does_not_silently_drop_other_containers(monkeypatch,tmp_path):
+    market(monkeypatch,tmp_path,slots=1)
+    monkeypatch.setattr(b,'load_container_options',lambda r:[container(str(i)) for i in range(9)])
+    result=call(container_ids=[str(i) for i in range(9)])
     assert not result and result.search_status['reason']=='profile_limit'
+    assert result.search_status['container_selection']=='explicit'
+
+
+def test_auto_shortlist_respects_armor_profile_limit(monkeypatch,tmp_path):
+    market(monkeypatch,tmp_path,slots=1)
+    monkeypatch.setattr(b,'load_container_options',lambda r:[container(str(i)) for i in range(9)])
+    armor=dict(id='armor',level=15,stats={'speed_modifier':1},name_ru='armor',category='',rank='',icon_url='')
+    monkeypatch.setattr(b,'load_armor',lambda *a:armor)
+    result=call(armor_ids=[None,'armor'])
+    assert result
+    auto=result.search_status['auto_selection']
+    assert auto['armor_profiles']==2
+    assert auto['selected_count']==4
+    assert auto['selected_profile_count']==8
+    assert len(result.search_status['models'])==8
+
+
+def test_auto_selection_prioritizes_constraint_bonus():
+    from app._quality_auto import select_auto_containers
+    plain=container('plain',slots=6)
+    weighted=container('weighted',slots=6,bonuses={'max_weight_bonus':{'value':81}})
+    selected,meta=select_auto_containers(
+        [plain,weighted],[option(1,{'speed_modifier':1},1)],
+        {'speed_modifier':10},minimum={'max_weight_bonus':81},requested_limit=1)
+    assert [c.item_id for c in selected]==['weighted']
+    assert meta['selected_count']==1 and meta['omitted']==['plain']
+
+
+def test_auto_selection_reports_candidate_budget_reduction():
+    from app._quality_auto import select_auto_containers
+    containers=[container(str(i),slots=1) for i in range(9)]
+    candidates=[option(i,{'speed_modifier':1},1) for i in range(3)]
+    selected,meta=select_auto_containers(
+        containers,candidates,{'speed_modifier':10},requested_limit=8,candidate_limit=6)
+    assert len(selected)==2
+    assert meta['candidate_reduced'] is True
+    assert meta['container_limit']==2
+    assert meta['omitted_count']==7
 
 
 def test_actual_missing_scipy_import_is_reported(monkeypatch,tmp_path):
