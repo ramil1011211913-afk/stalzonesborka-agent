@@ -40,6 +40,7 @@ def test_native_worker_full_rank_and_game_validation(monkeypatch, tmp_path, mode
     market(monkeypatch, tmp_path)
     result = call(optimization_mode=mode, priority_order=['speed_modifier'] if mode=='lexicographic' else None)
     assert result and result.search_status['state']=='OPTIMAL', result.search_status
+    assert result.search_status['profile_count'] == 1
     assert result[0].combined_stats['speed_modifier']==12 and result[0].total_price==6
     assert result[0].carryable and b._final_valid(result[0],10,{},{},True,False,True)
     assert result.search_status['models'][0]['sampled_worker_peak_rss']>0
@@ -352,8 +353,7 @@ def test_ui_warns_when_optimality_is_not_proven():
     from pathlib import Path
     html=(Path(b.__file__).parent/'templates/index.html').read_text(encoding='utf8')
     assert 'class="optimality-warning"' in html
-    assert "d.search_status.backend === 'max_quality_milp'" in html
-    assert 'd.builds.length > 0 && !d.search_status.optimality_proven' in html
+    assert 'qualityWarning(d)' in html
     assert 'role="alert"' in html
     assert 'Найдена допустимая сборка, но её оптимальность не доказана.' in html
     assert 'Deep-поиск (300 с)' in html

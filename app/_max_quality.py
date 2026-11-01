@@ -356,6 +356,7 @@ def _build_once(budget, *, quality_timeout=limits.DEFAULT_SECONDS, deep_optimiza
         result = response(winner, state=state, reason=reason,
             models=models, timings=dict(preparation_seconds=preparation, validation_seconds=validation_seconds,
                 worker_seconds=sum(m.get('worker_seconds', 0) for m in models), total_seconds=time.monotonic()-start))
+        result.search_status['profile_count'] = len(context['profiles'])
         result.search_status['limits']['seconds'] = quality_timeout
         if primary_only:
             from ._ehp_primary_only import annotate_status

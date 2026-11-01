@@ -283,6 +283,25 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
+function qualityWarning(data) {
+    const status = data.search_status;
+    if (!status || status.backend !== 'max_quality_milp' || status.optimality_proven || !data.builds?.length) return '';
+    const models = Array.isArray(status.models) ? status.models : [];
+    const model = models[0];
+    const planChanged = data.roll_plan_search?.changed && !data.roll_plan_search?.keep_baseline;
+    if (status.state === 'FEASIBLE' && status.profile_count === 1 && models.length === 1 &&
+        model.state === 'FEASIBLE' && model.priority_optimality_proven === true &&
+        model.cost_optimality_proven === false && model.validation_reason === 'passed' &&
+        !model.validation_failed && !planChanged && !status.primary_only) {
+        return 'Максимум основной цели подтверждён в проверенном пуле. Минимальная цена при этом результате не доказана.';
+    }
+    let message = 'Найдена допустимая сборка, но её оптимальность не доказана.';
+    if (status.profile_count > 1) message += ' Оптимальность по всем выбранным профилям не подтверждена.';
+    if (!status.deep_optimization) message += ' Для более полной проверки можно включить Deep-поиск (300 с).';
+    if (status.profile_count > 1) message += ' Также можно выбрать конкретный контейнер или броню.';
+    return message;
+}
+
 async function loadStats() {
     try {
         const r = await fetch('/api/stats'); const d = await r.json();
@@ -962,12 +981,10 @@ async function findBuilds() {
         // Preserve server ordering: balanced, lexicographic and price modes
         // have different ranking keys; the scalar display score is insufficient.
         let html = '';
-        if (d.search_status && d.search_status.backend === 'max_quality_milp' &&
-            d.builds.length > 0 && !d.search_status.optimality_proven) {
+        const qualityNotice = qualityWarning(d);
+        if (qualityNotice) {
             html += `<div class="optimality-warning" role="alert">
-                <b>Найдена допустимая сборка, но её оптимальность не доказана.</b>
-                Проверены не все выбранные профили — в непроверенных может быть более выгодный вариант.
-                Для более полной проверки включите Deep-поиск (300 с) или выберите конкретный контейнер.
+                ${escapeHtml(qualityNotice)}
             </div>`;
         }
         if (d.search_status) html += `<div role="status" style="color:#f0a050;margin-bottom:8px">${escapeHtml(d.search_status.message)}</div>`;
