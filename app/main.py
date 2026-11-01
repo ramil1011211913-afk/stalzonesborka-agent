@@ -11,6 +11,7 @@ Endpoints:
 """
 import json
 import logging
+import math
 from pathlib import Path
 import threading
 
@@ -227,6 +228,18 @@ def api_builds(
         order = json.loads(priority_order) if priority_order else None
         scales = json.loads(objective_scales) if objective_scales else None
         armor_list = json.loads(armor_ids) if armor_ids else None
+        if mins is None:
+            mins = {}
+        if maxs is None:
+            maxs = {}
+        for name, thresholds in (('min_thresholds', mins), ('max_thresholds', maxs)):
+            if (not isinstance(thresholds, dict) or any(
+                    not isinstance(key, str) or type(value) not in (int, float) or not math.isfinite(value)
+                    for key, value in thresholds.items())):
+                raise ValueError(f'{name} must be an object of finite numeric values')
+        if (not isinstance(exclude_list, list) or
+                any(not isinstance(item, str) for item in exclude_list)):
+            raise ValueError('exclude must be a list of item IDs')
         container_ids_list = None
         if container_ids is not None:
             parsed_containers = json.loads(container_ids)
@@ -266,6 +279,19 @@ def api_builds(
         if not isinstance(owned_list, list) or any(not isinstance(a, dict) for a in owned_list):
             raise ValueError('Owned artifacts must be a JSON list of records')
         json.dumps(owned_list, allow_nan=False)
+        for item in owned_list:
+            if not isinstance(item.get('item_id'), str) or not item['item_id'].strip():
+                raise ValueError('Each owned artifact must have an item_id')
+            if type(item.get('quality', 0)) is not int or not 0 <= item.get('quality', 0) <= 5:
+                raise ValueError('Owned artifact quality must be an integer from 0 to 5')
+            if type(item.get('ptn', 0)) is not int or not 0 <= item.get('ptn', 0) <= 15:
+                raise ValueError('Owned artifact ptn must be an integer from 0 to 15')
+            bonuses = item.get('bonus_ids', [])
+            if not isinstance(bonuses, list) or any(not isinstance(bonus, str) for bonus in bonuses):
+                raise ValueError('Owned artifact bonus_ids must be a list of strings')
+            percent = item.get('art_percent', 0)
+            if percent is not None and (type(percent) not in (int, float) or not math.isfinite(percent)):
+                raise ValueError('Owned artifact art_percent must be a finite number')
     except (ValueError, TypeError) as e:
         return JSONResponse(
             status_code=422,

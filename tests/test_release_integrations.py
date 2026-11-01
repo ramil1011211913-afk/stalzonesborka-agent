@@ -56,6 +56,23 @@ def test_rejected_search_does_not_replace_saved_owned(isolated_main, monkeypatch
     assert application_store(directory / 'data').owned()['artifacts'] == original
 
 
+@pytest.mark.parametrize('params', [
+    {'min_thresholds': '[1]'}, {'max_thresholds': '{"speed_modifier":"5"}'},
+    {'min_thresholds': '{"speed_modifier":NaN}'}, {'exclude': '{"a":1}'},
+    {'owned': '[{"quality":"oops"}]'}, {'owned': '[{"item_id":"a","quality":"3"}]'},
+    {'owned': '[{"item_id":"a","ptn":16}]'}, {'owned': '[{"item_id":"a","bonus_ids":"SPEED_MOD"}]'},
+    {'owned': '[{"item_id":"a","art_percent":"130"}]'},
+])
+def test_invalid_search_input_returns_422_without_saving_owned(isolated_main, params):
+    from fastapi.testclient import TestClient
+    from app._app_state import application_store
+    main, directory = isolated_main
+    main._persist_owned_artifacts([dict(item_id='saved')])
+    response = TestClient(main.app).get('/api/builds', params=params)
+    assert response.status_code == 422
+    assert application_store(directory / 'data').owned()['artifacts'] == [dict(item_id='saved')]
+
+
 def test_budget_sweep_uses_selected_armor_at_every_budget(monkeypatch):
     from app import meta_optimizer
     calls = []
