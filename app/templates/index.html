@@ -1127,9 +1127,9 @@ async function findBuilds() {
                     pctHtml = `<div class="ptn" style="color:#53c353" title="Рекомендуемый процент для ролла">≈${escapeHtml(a.recommended_percent)}% (ролл)</div>`;
                 } else if (a.art_percent_known === false && a.unknown_percent_range) {
                     const pr = a.unknown_percent_range;
-                    pctHtml = `<div class="ptn" style="color:#f0a050" title="Процент неизвестен; показан диапазон тира">${a.ptn === 0 ? '≈' : ''}${escapeHtml(a.art_percent)}% <span style="color:#888;font-size:.85em">(${escapeHtml(pr.min)}–${escapeHtml(pr.maximum)}%)</span></div>`;
+                    pctHtml = `<div class="ptn" style="color:#f0a050" title="Процент неизвестен; показана расчётная оценка">≈${escapeHtml(a.art_percent)}% <span style="color:#888;font-size:.85em">(оценка; ${escapeHtml(pr.min)}–${escapeHtml(pr.maximum)}%)</span></div>`;
                 } else {
-                    pctHtml = `<div class="ptn" style="color:#f0a050">${a.ptn === 0 ? '≈' : ''}${escapeHtml(a.art_percent)}%</div>`;
+                    pctHtml = `<div class="ptn" style="color:#f0a050" title="Известный процент">${escapeHtml(a.art_percent)}% <span style="color:#888;font-size:.85em">(известен)</span></div>`;
                 }
                 aHtml += `<div class="artifact-card">
                     ${a.icon_url ? `<img src="${escapeHtml(a.icon_url)}" onerror="this.style.display='none'">` : ''}

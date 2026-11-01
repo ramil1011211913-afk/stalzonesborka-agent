@@ -58,7 +58,7 @@ def calc_art_percent(qlt: int, stats_random: float | None) -> float:
     if stats_random == 0:
         # stats_random=0 means average — use midpoint
         return meta["min"] + meta["range"] / 2
-    normalized = (stats_random + 2) / 4
+    normalized = max(0.0, min(1.0, (stats_random + 2) / 4))
     return meta["min"] + meta["range"] * normalized
 
 

@@ -8,6 +8,7 @@ Tables:
 """
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -68,6 +69,32 @@ def execute_with_retry(conn: sqlite3.Connection, sql: str, params: tuple = ()):
                 time.sleep(delay)
             else:
                 raise
+
+
+def _repair_derived_percentages(conn):
+    """Repair only values matching the former unbounded collector formula."""
+    from .api_client import QUALITY_RANGES, calc_art_percent
+    for table in ('auction_lots', 'auction_history'):
+        rows = conn.execute(
+            f'SELECT id, quality, art_percent, stats_random, additional_raw FROM {table} '
+            'WHERE stats_random < -2 OR stats_random > 2').fetchall()
+        updates = []
+        for row in rows:
+            try:
+                raw = json.loads(row['additional_raw'] or '{}')
+                random = raw.get('stats_random')
+                quality = row['quality']
+                if (quality not in QUALITY_RANGES or isinstance(random, bool)
+                        or not isinstance(random, (int, float)) or not math.isfinite(random)
+                        or random != row['stats_random']):
+                    continue
+                tier = QUALITY_RANGES[quality]
+                old = tier['min'] + tier['range'] * (random + 2) / 4
+                if math.isclose(row['art_percent'], old, rel_tol=0, abs_tol=1e-8):
+                    updates.append((calc_art_percent(quality, random), row['id']))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        conn.executemany(f'UPDATE {table} SET art_percent=? WHERE id=?', updates)
 
 
 def init_db():
@@ -192,6 +219,7 @@ def init_db():
             conn.execute("ALTER TABLE containers ADD COLUMN effectiveness REAL DEFAULT 0")
         if "bonus_stats" not in existing_cont_cols:
             conn.execute("ALTER TABLE containers ADD COLUMN bonus_stats TEXT DEFAULT '{}'")
+        _repair_derived_percentages(conn)
         conn.commit()
 
     log.info("Database initialized at %s", get_db_path())
