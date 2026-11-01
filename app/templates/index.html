@@ -56,6 +56,19 @@ header p{color:#888;margin-top:6px;font-size:.9em}
 .owned-item{background:#0f3460;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;align-items:center;gap:8px;border:1px solid #1a1a4e}
 .owned-item select,.owned-item input{background:#1a1a2e;border:1px solid #1a1a4e;border-radius:4px;color:#e0e0e0;padding:4px 6px;font-size:.8em}
 .owned-item .remove{color:#e94560;cursor:pointer;font-weight:bold}
+.container-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.container-search{flex:1;min-width:180px;padding:8px 10px;background:#0f3460;border:1px solid #1a1a4e;border-radius:6px;color:#e0e0e0}
+.container-search:focus{outline:none;border-color:#e94560}
+.container-count{color:#f0a050;font-size:.85em;white-space:nowrap}
+.container-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;max-height:280px;overflow-y:auto;padding:8px;background:#0f172a;border:1px solid #1a1a4e;border-radius:8px}
+.container-choice{display:flex;align-items:flex-start;gap:7px;font-size:.82em;color:#ccc;background:#0f3460;padding:7px 8px;border-radius:6px;border:1px solid transparent;cursor:pointer;line-height:1.35}
+.container-choice:hover{border-color:#e94560}
+.container-choice input{accent-color:#e94560;margin-top:2px;flex-shrink:0}
+.container-choice .meta{color:#888;font-size:.85em}
+.container-choice[hidden]{display:none}
+.container-hint{font-size:.8em;color:#888;margin-top:8px;line-height:1.45}
+.container-hint.limit{color:#e94560}
+.container-hint b{color:#f0a050}
 .section-title{color:#888;font-size:.8em;text-transform:uppercase;margin-bottom:8px;margin-top:12px}
 .switch{position:relative;display:inline-block;width:40px;height:20px;flex-shrink:0}
 .switch input{opacity:0;width:0;height:0}
@@ -136,6 +149,17 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div style="font-size:.8em;color:#888">Шаблон подбирает экземпляры заданных артефактов; выбор цели поиска относится к обычному подбору.</div>
 </div>
 
+<div class="panel" id="ownedContainersPanel">
+<h2>Мои контейнеры</h2>
+<div class="container-toolbar">
+<input type="search" id="ownedContainerSearch" class="container-search" placeholder="Поиск по названию или ID">
+<button class="btn" id="ownedContainersClear" style="background:#0f3460;border:1px solid #e94560;font-size:.85em;padding:8px 16px">Очистить</button>
+<span class="container-count" id="ownedContainersCount">Выбрано: 0</span>
+</div>
+<div id="ownedContainersList" class="container-picker" role="group" aria-label="Выберите контейнеры, которые у вас есть"></div>
+<div class="container-hint" id="ownedContainersHint">Отметьте контейнеры, которые у вас есть: сборщик выберет лучшую сборку по вашим приоритетам среди них. Если ничего не отмечено, работает одиночный выбор или «Авто» из блока «Параметры».</div>
+</div>
+
 <div class="panel" style="padding:10px">
 <div style="display:flex;gap:8px;align-items:center">
 <input type="text" id="aiPrompt" placeholder="Опиши сборку: живучесть, пулестой, вес, бюджет 2млн, дубликаты можно, бочонок..." style="flex:1;background:#1a1a2e;border:1px solid #2a2a4e;color:#e0e0e0;border-radius:6px;padding:8px 12px;font-size:.9em">
@@ -204,7 +228,10 @@ function updateQualityConservativeHint() {
     } else if (percentMode === 'midpoint') {
         percentHint.textContent = 'Известный процент лота сохраняется; для неизвестных процентов берётся середина диапазона качества как ожидаемая оценка. Фактический ролл может быть ниже; это не гарантия.';
     }
+    updateOwnedContainerState();
 }
+const MAX_QUALITY_CONTAINERS = 8;
+let ownedContainerIds = new Set();
 let allStats = {};
 let containers = [];
 let allArtefacts = [];
@@ -265,18 +292,119 @@ async function loadStats() {
     } catch(e) { console.error('loadStats:', e); }
 }
 
+function restoreOwnedContainerSelection() {
+    ownedContainerIds = new Set();
+    try {
+        const saved = JSON.parse(localStorage.getItem('owned_containers') || '[]');
+        const available = new Set(containers.map(c => c.id));
+        if (Array.isArray(saved)) {
+            saved.forEach(id => {
+                if (typeof id === 'string' && available.has(id)) ownedContainerIds.add(id);
+            });
+        }
+    } catch(e) { console.error('restoreOwnedContainers:', e); }
+}
+
+function persistOwnedContainerSelection() {
+    try {
+        localStorage.setItem('owned_containers', JSON.stringify(getOwnedContainerIds()));
+    } catch(e) { console.error('persistOwnedContainers:', e); }
+}
+
+function getOwnedContainerIds() {
+    if (!containers.length) return Array.from(ownedContainerIds);
+    return containers.filter(c => ownedContainerIds.has(c.id)).map(c => c.id);
+}
+
+function filterOwnedContainers() {
+    const query = (document.getElementById('ownedContainerSearch').value || '').trim().toLowerCase();
+    document.querySelectorAll('#ownedContainersList .container-choice').forEach(label => {
+        label.hidden = !!query && !label.dataset.search.includes(query);
+    });
+}
+
+function updateOwnedContainerState() {
+    const count = ownedContainerIds.size;
+    const countEl = document.getElementById('ownedContainersCount');
+    if (countEl) countEl.textContent = `Выбрано: ${count}`;
+    const single = document.getElementById('containerId');
+    if (single) {
+        single.disabled = count > 0;
+        single.title = count > 0 ? 'Используется набор «Мои контейнеры»' : '';
+    }
+    const hint = document.getElementById('ownedContainersHint');
+    if (!hint) return;
+    const isQuality = document.getElementById('objectiveMode').value === 'max_quality';
+    if (isQuality && count > MAX_QUALITY_CONTAINERS) {
+        hint.className = 'container-hint limit';
+        hint.innerHTML = `<b>Max Quality: не более ${MAX_QUALITY_CONTAINERS} контейнеров за запрос.</b> Выбрано ${count}. Уменьшите набор или выберите обычную цель поиска.`;
+    } else if (count > 0) {
+        hint.className = 'container-hint';
+        hint.innerHTML = `Выбрано контейнеров: <b>${count}</b>. Сборщик найдёт лучшую сборку по приоритетам среди них.${isQuality ? ` Для Max Quality доступно до ${MAX_QUALITY_CONTAINERS}.` : ''}`;
+    } else {
+        hint.className = 'container-hint';
+        hint.innerHTML = 'Отметьте контейнеры, которые у вас есть: сборщик выберет лучшую сборку по вашим приоритетам среди них. Если ничего не отмечено, работает одиночный выбор или «Авто» из блока «Параметры».';
+    }
+}
+
+function renderOwnedContainers() {
+    const list = document.getElementById('ownedContainersList');
+    list.replaceChildren();
+    if (!containers.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.style.padding = '8px';
+        empty.textContent = 'Нет доступных контейнеров';
+        list.appendChild(empty);
+        updateOwnedContainerState();
+        return;
+    }
+    containers.forEach(c => {
+        const label = document.createElement('label');
+        label.className = 'container-choice';
+        label.dataset.search = `${c.id} ${c.name_ru || ''} ${c.name_en || ''}`.toLowerCase();
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = c.id;
+        checkbox.checked = ownedContainerIds.has(c.id);
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) ownedContainerIds.add(c.id);
+            else ownedContainerIds.delete(c.id);
+            persistOwnedContainerSelection();
+            updateOwnedContainerState();
+        });
+        const text = document.createElement('span');
+        text.innerHTML = `<b>${escapeHtml(c.name_ru || c.id)}</b><br><span class="meta">${escapeHtml(c.slots)} сл. · ${escapeHtml(c.id)}</span>`;
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        list.appendChild(label);
+    });
+    filterOwnedContainers();
+    updateOwnedContainerState();
+}
+
 async function loadContainers() {
     try {
         const r = await fetch('/api/containers'); containers = await r.json();
         const sel = document.getElementById('containerId');
+        while (sel.options.length > 1) sel.remove(1);
         containers.forEach(c => {
             const opt = document.createElement('option');
             opt.value = c.id;
             opt.textContent = `${c.name_ru} (${c.slots} сл.)`;
             sel.appendChild(opt);
         });
+        restoreOwnedContainerSelection();
+        renderOwnedContainers();
     } catch(e) { console.error('loadContainers:', e); }
 }
+
+document.getElementById('ownedContainerSearch').addEventListener('input', filterOwnedContainers);
+document.getElementById('ownedContainersClear').addEventListener('click', () => {
+    ownedContainerIds.clear();
+    persistOwnedContainerSelection();
+    renderOwnedContainers();
+});
 
 async function loadArtefacts() {
     try {
@@ -539,19 +667,36 @@ async function findBuilds() {
     const maxStat = document.getElementById('maxStatToggle').checked;
     const btn = document.getElementById('buildBtn');
     if (btn.disabled) return;
-    btn.disabled = true;
     const results = document.getElementById('results');
+    const requestedObjectiveMode = document.getElementById('objectiveMode').value;
+    const selectedOwnedContainerIds = getOwnedContainerIds();
+    const usingOwnedContainers = selectedOwnedContainerIds.length > 0;
+    if (requestedObjectiveMode === 'max_quality' && selectedOwnedContainerIds.length > MAX_QUALITY_CONTAINERS) {
+        results.innerHTML = `<div class="empty">Max Quality допускает не более ${MAX_QUALITY_CONTAINERS} контейнеров за запрос. Выбрано ${selectedOwnedContainerIds.length}. Уменьшите набор или выберите обычную цель поиска.</div>`;
+        return;
+    }
+    btn.disabled = true;
     const cid2 = document.getElementById('containerId');
-    const cidName = cid2.options[cid2.selectedIndex]?.textContent || 'Авто';
+    const selectedOwnedContainers = containers.filter(c => selectedOwnedContainerIds.includes(c.id));
+    const cidName = usingOwnedContainers
+        ? `Свои контейнеры (${selectedOwnedContainerIds.length})`
+        : (cid2.options[cid2.selectedIndex]?.textContent || 'Авто');
     const slotMatch = cidName.match(/\((\d+)\s*сл\./);
-    const slots = slotMatch ? parseInt(slotMatch[1]) : '?';
+    const ownedSlots = selectedOwnedContainers.map(c => Number(c.slots) || 0);
+    const slots = usingOwnedContainers
+        ? (ownedSlots.length ? Math.max(...ownedSlots) : '?')
+        : (slotMatch ? parseInt(slotMatch[1]) : '?');
     let stage = 0;
     const stages = [
         'Загрузка данных из аукциона',
-        `Поиск: ${cidName} (${slots} слотов)`,
+        usingOwnedContainers
+            ? `Поиск: ${cidName}, до ${slots} слотов`
+            : `Поиск: ${cidName} (${slots} слотов)`,
         `Обработка результатов`
     ];
-    let estTime = slots >= 7 ? 85 : slots >= 5 ? 15 : 5;
+    let estTime = usingOwnedContainers
+        ? Math.max(5, selectedOwnedContainerIds.length * (slots >= 7 ? 85 : slots >= 5 ? 15 : 5))
+        : (slots >= 7 ? 85 : slots >= 5 ? 15 : 5);
     results.innerHTML = `<div class="loading" id="loadingBox">
         <div style="font-size:1.1em;margin-bottom:8px">⟳ <span id="loadStage">${stages[0]}</span></div>
         <div style="background:#1a1a2e;border-radius:4px;height:8px;width:300px;overflow:hidden">
@@ -676,8 +821,18 @@ async function findBuilds() {
     }
     params.append('tolerance', document.getElementById('tolerance').value);
     params.append('top_n', document.getElementById('topN').value);
-    const cid = document.getElementById('containerId').value;
-    if (cid) params.append('container_id', cid);
+    const selectedContainerIds = getOwnedContainerIds();
+    if (requestedObjectiveMode === 'max_quality' && selectedContainerIds.length > MAX_QUALITY_CONTAINERS) {
+        stopTimer();
+        results.innerHTML = `<div class="empty">Max Quality допускает не более ${MAX_QUALITY_CONTAINERS} контейнеров за запрос. Выбрано ${selectedContainerIds.length}. Уменьшите набор или выберите обычную цель поиска.</div>`;
+        return;
+    }
+    if (selectedContainerIds.length > 0) {
+        params.append('container_ids', JSON.stringify(selectedContainerIds));
+    } else {
+        const cid = document.getElementById('containerId').value;
+        if (cid) params.append('container_id', cid);
+    }
     const aid = document.getElementById('armorId').value;
     if (aid) params.append('armor_id', aid);
     params.append('carryable_only', document.getElementById('carryableOnly').value);
@@ -857,6 +1012,13 @@ async function findBuilds() {
                 <span style="color:#555">/${teh.toFixed(1)} (${ehpPct}%)</span>
             </div>`;
             html += `</div></div>`;
+        }
+        if (Array.isArray(d.container_ids) && d.container_ids.length > 0) {
+            const ownedNames = d.container_ids.map(id => {
+                const found = containers.find(c => c.id === id);
+                return found ? found.name_ru : id;
+            });
+            html += `<div style="margin-bottom:8px;color:#f0a050;font-size:.85em">Учтены выбранные контейнеры: ${ownedNames.map(escapeHtml).join(', ')}</div>`;
         }
         html += `<div style="margin-bottom:10px;color:#888">${headerText}</div>`;
         window._lastBuilds = d.builds;
@@ -1232,6 +1394,11 @@ async function applyParseResult(d, btn, promptText) {
         document.getElementById('allowDuplicates').value = d.allow_duplicates ? '1' : '0';
     }
     if (d.container_id) {
+        if (ownedContainerIds.size > 0) {
+            ownedContainerIds.clear();
+            persistOwnedContainerSelection();
+            renderOwnedContainers();
+        }
         document.getElementById('containerId').value = d.container_id;
     }
     if (d.unknown_percent !== undefined) {

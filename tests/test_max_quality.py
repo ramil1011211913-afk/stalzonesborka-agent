@@ -367,6 +367,15 @@ def test_explicit_profile_limit_does_not_silently_drop_other_containers(monkeypa
     assert result.search_status['container_selection']=='explicit'
 
 
+def test_explicit_owned_container_pool_selects_strongest(monkeypatch,tmp_path):
+    market(monkeypatch,tmp_path,[({'speed_modifier':5},1)],slots=1)
+    monkeypatch.setattr(b,'load_container_options',lambda r:[container('a',1,100),container('b',1,200)])
+    result=call(container_ids=['a','b'])
+    assert result and result[0].container.item_id=='b'
+    assert result.search_status['container_selection']=='explicit'
+    assert {model['container_id'] for model in result.search_status['models']}=={'a','b'}
+
+
 def test_auto_shortlist_respects_armor_profile_limit(monkeypatch,tmp_path):
     market(monkeypatch,tmp_path,slots=1)
     monkeypatch.setattr(b,'load_container_options',lambda r:[container(str(i)) for i in range(9)])

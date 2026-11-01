@@ -1592,6 +1592,18 @@ def build_artifact_sets(
             priorities = {list(min_thresholds)[0]: 10}
     priorities = dict(sorted((priorities or {}).items(), key=lambda x: -x[1]))
     region = region or Config.REGION
+    if container_id and container_ids is not None:
+        raise ValueError("Choose container_id or container_ids")
+    if container_ids is not None:
+        if (not isinstance(container_ids, list) or not container_ids or
+                any(not isinstance(cid, str) or not cid.strip() for cid in container_ids)):
+            raise ValueError("container_ids must be a nonempty list of container IDs")
+        normalized_ids = []
+        for cid in container_ids:
+            cid = cid.strip()
+            if cid not in normalized_ids:
+                normalized_ids.append(cid)
+        container_ids = normalized_ids
     # Price minimization is now explicit; zero balanced budget means free builds.
     min_budget = min_budget or optimization_mode == "min_budget"
     optimization_mode = "min_budget" if min_budget else optimization_mode
@@ -1657,7 +1669,11 @@ def build_artifact_sets(
     # Containers
     all_containers = load_container_options(region)
     if container_ids is not None:
-        containers = [c for c in all_containers if c.item_id in set(container_ids)]
+        by_id = {c.item_id: c for c in all_containers}
+        missing = [cid for cid in container_ids if cid not in by_id]
+        if missing:
+            raise ValueError("Unknown container ID(s): " + ", ".join(missing))
+        containers = [by_id[cid] for cid in container_ids]
     elif container_id:
         containers = [c for c in all_containers if c.item_id == container_id]
     else:

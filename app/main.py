@@ -173,6 +173,7 @@ def api_builds(
     budget: int = Query(0, description="Artifact purchase cap; armor/container excluded; min_budget with zero budget removes cap", ge=0),
     tolerance: float = Query(8.0, ge=0, le=50, description="Budget tolerance %"),
     container_id: str | None = Query(None, description="Specific container ID"),
+    container_ids: str | None = Query(None, description='JSON list of owned container IDs, e.g. ["rgoz","v667"]'),
     top_n: int = Query(10, ge=1, le=50, description="Top N builds"),
     # Priority sliders 0-10 — pass as JSON string for flexibility
     priorities: str | None = Query(None, description='JSON: {"health_bonus": 10, "bullet_dmg_factor": 8}'),
@@ -226,6 +227,21 @@ def api_builds(
         order = json.loads(priority_order) if priority_order else None
         scales = json.loads(objective_scales) if objective_scales else None
         armor_list = json.loads(armor_ids) if armor_ids else None
+        container_ids_list = None
+        if container_ids is not None:
+            parsed_containers = json.loads(container_ids)
+            if (not isinstance(parsed_containers, list) or not parsed_containers or
+                    any(not isinstance(cid, str) or not cid.strip() for cid in parsed_containers)):
+                raise ValueError("container_ids must be a nonempty JSON list of container IDs")
+            container_ids_list = []
+            for cid in parsed_containers:
+                cid = cid.strip()
+                if cid not in container_ids_list:
+                    container_ids_list.append(cid)
+        if container_id == "":
+            container_id = None
+        if container_id is not None and container_ids_list is not None:
+            raise ValueError("Choose container_id or container_ids")
         from ._quality_scenario import resolve_mode, roll_baseline
         unknown_mode = resolve_mode(conservative, unknown_percent)
         if roll_optimize and min_budget:
@@ -304,6 +320,7 @@ def api_builds(
             top_n=top_n,
             region=Config.REGION,
             container_id=container_id,
+            container_ids=container_ids_list,
             owned_artifacts=owned_list,
             carryable_only=carryable_only,
             allow_duplicates=allow_duplicates,
@@ -338,6 +355,9 @@ def api_builds(
             "effective_budget": int(budget * (1 + tolerance / 100)),
             "tolerance_pct": tolerance,
             "container_id": container_id,
+            "container_ids": container_ids_list,
+            "container_selection": ("owned" if container_ids_list else
+                                    "single" if container_id else "auto"),
             "top_n": top_n,
             "priorities": prio,
             "optimization_mode": mode,
@@ -392,6 +412,10 @@ def api_builds(
         "effective_budget": int(budget * (1 + tolerance / 100)),
         "tolerance_pct": tolerance,
         "armor_id": armor_id,
+        "container_id": container_id,
+        "container_ids": container_ids_list,
+        "container_selection": ("owned" if container_ids_list else
+                                "single" if container_id else "auto"),
         "priorities": prio,
         "optimization_mode": mode,
         "min_thresholds": mins,
