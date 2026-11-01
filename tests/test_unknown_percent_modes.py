@@ -236,6 +236,41 @@ def test_ordinary_known_roll_preserved_in_every_mode(monkeypatch, tmp_path):
         assert result[0].combined_stats[SPEED] == pytest.approx(KNOWN_SPEED)
 
 
+@pytest.mark.parametrize('mode,percent', [('minimum', 115.0), ('midpoint', 122.5)])
+def test_empty_beam_can_rescue_unknown_percent_scenario(monkeypatch, tmp_path, mode, percent):
+    import numpy as np
+    helium_market(monkeypatch, tmp_path, known=False)
+    def empty(*args, **kwargs):
+        return np.array([]), np.zeros((0, args[1]), dtype=np.int32)
+    result = b.build_artifact_sets(
+        3_000_000, tolerance_pct=0, priorities={SPEED: 10}, region='EU',
+        unknown_percent=mode, top_n=1, _beam_search_fn=empty)
+    assert result and result.search_status['fallback_attempted']
+    assert result.search_status['state'] == 'FEASIBLE'
+    assert not result.search_status['optimality_proven']
+    assert result[0].artifacts[0].auction_lot_id == UNKNOWN_LOT
+    assert result[0].artifacts[0].art_percent == percent
+
+
+def test_scenario_rescue_rechecks_original_market_descriptor(monkeypatch, tmp_path):
+    import numpy as np
+    from types import SimpleNamespace
+    from scipy import optimize
+    path = helium_market(monkeypatch, tmp_path, known=False)
+    def empty(*args, **kwargs):
+        return np.array([]), np.zeros((0, args[1]), dtype=np.int32)
+    def changed(*args, **kwargs):
+        with sqlite3.connect(path) as conn:
+            conn.execute('UPDATE auction_lots SET buyout_price = buyout_price + 1')
+        return SimpleNamespace(status=0, x=np.array([1.]))
+    monkeypatch.setattr(optimize, 'milp', changed)
+    result = b.build_artifact_sets(
+        3_000_000, tolerance_pct=0, priorities={SPEED: 10}, region='EU',
+        unknown_percent='midpoint', top_n=1, _beam_search_fn=empty)
+    assert not result and result.search_status['state'] == 'UNKNOWN'
+    assert result.search_status['models'][0]['reason'] == 'invalid_incumbent'
+
+
 def test_ui_exposes_midpoint_default_and_full_range():
     from pathlib import Path
     html = (Path(b.__file__).parent / 'templates/index.html').read_text(encoding='utf8')

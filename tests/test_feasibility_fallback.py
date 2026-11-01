@@ -102,11 +102,11 @@ def test_unsupported_tier_is_not_silently_calculated_as_common(monkeypatch,tmp_p
     assert [o.auction_lot_id for o in rescue.current_candidates(opts,connect,'EU')]==[2,3]
 
 
-def test_empty_conservative_request_is_explicitly_unsupported(monkeypatch,tmp_path):
+def test_empty_conservative_request_can_use_rescue(monkeypatch,tmp_path):
     market(monkeypatch,tmp_path)
     result=builder.build_artifact_sets(10,priorities={'speed_modifier':10},region='EU',conservative=True,_beam_search_fn=empty)
-    assert not result and result.search_status['state']=='UNKNOWN'
-    assert result.search_status['models'][0]['reason']=='unsupported_transform'
+    assert result and result.search_status['state']=='FEASIBLE'
+    assert not result.search_status['optimality_proven']
 
 
 def test_expiry_is_rechecked_after_solver(monkeypatch,tmp_path):
@@ -207,12 +207,17 @@ def test_scope_and_ui_do_not_turn_unknown_into_budget_advice():
 
 
 @pytest.mark.parametrize('mode',['balanced','lexicographic'])
-def test_real_1111m_snapshot_false_empty_regression(monkeypatch,mode):
+def test_real_1111m_snapshot_false_empty_regression(monkeypatch, tmp_path, mode):
+    import gzip
     import os
+    import shutil
     from pathlib import Path
     path=os.environ.get('STALZONE_FEASIBILITY_TEST_DB')
     if not path:
-        pytest.skip('Explicit isolated market snapshot required')
+        path = tmp_path / 'market.db'
+        fixture = Path(__file__).parent / 'fixtures' / 'feasibility-market.sqlite.gz'
+        with gzip.open(fixture, 'rb') as source, path.open('wb') as destination:
+            shutil.copyfileobj(source, destination)
     path=Path(path).resolve()
     @contextmanager
     def connect():

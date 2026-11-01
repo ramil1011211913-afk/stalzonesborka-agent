@@ -191,8 +191,11 @@ class StalzoneAPI:
         expected_total = None
         while True:
             data = self.get_auction_lots(item_id, limit=200, offset=offset, additional=True)
-            lots = data.get("lots", [])
-            total = data.get("total", 0)
+            lots = data.get("lots")
+            total = data.get("total")
+            if (type(total) is not int or total < 0 or not isinstance(lots, list)
+                    or any(not isinstance(lot, dict) for lot in lots)):
+                raise AuctionAPIError(f"Invalid auction page for {item_id}")
             if expected_total is None:
                 expected_total = total
                 if expected_total > max_records:

@@ -64,11 +64,6 @@ def test_search_modes_filter_before_solver_and_preserve_constraints(monkeypatch,
         if mode == 'min_budget':args.update(min_budget=True)
         if mode == 'rescue':
             args['_beam_search_fn'] = empty
-            if conservative:
-                # Existing rescue does not support conservative; no invented answer.
-                result = b.build_artifact_sets(**args)
-                assert not result and result.search_status['state'] == 'UNKNOWN'
-                return
         result = b.build_artifact_sets(**args)
     assert result and all(o.ptn == 0 and o.auction_lot_id == 2 for build in result for o in build.artifacts)
     assert result[0].carryable and result[0].combined_stats['radiation_accumulation'] == 10

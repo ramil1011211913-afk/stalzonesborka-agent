@@ -201,7 +201,7 @@ _MAX_COMBOS = 50_000_000
 AUCTION_STALE_HOURS = 6
 
 # Cache for emission schedule (5 min TTL to avoid API call on every build request)
-_emission_cache: dict = {"data": None, "ts": 0}
+_emission_cache: dict = {}
 
 def check_auction_freshness(region: str | None = None) -> dict:
     """Check if auction data is fresh enough for building.
@@ -216,7 +216,7 @@ def check_auction_freshness(region: str | None = None) -> dict:
     """
     from datetime import datetime, timezone
     import time as _time
-    region = region or Config.REGION
+    region = (region or Config.REGION).upper()
     with get_connection() as conn:
         row = conn.execute(
             "SELECT MAX(collected_at) as max_ts, COUNT(*) as cnt "
@@ -241,14 +241,14 @@ def check_auction_freshness(region: str | None = None) -> dict:
                 "last_emission": None}
     # Emission check — cached 5 min to avoid API call on every build request.
     now_ts = _time.time()
-    emission_info = _emission_cache["data"]
-    if _emission_cache["ts"] == 0 or now_ts - _emission_cache["ts"] > 300:
+    cached = _emission_cache.get(region, {"data": None, "ts": 0})
+    emission_info = cached["data"]
+    if cached["ts"] == 0 or now_ts - cached["ts"] > 300:
         try:
             from .api_client import StalzoneAPI
             api = StalzoneAPI(region)
             emission_info = api.get_emission()
-            _emission_cache["data"] = emission_info
-            _emission_cache["ts"] = now_ts
+            _emission_cache[region] = {"data": emission_info, "ts": now_ts}
         except Exception:
             pass
     is_fresh = age_hours < AUCTION_STALE_HOURS
@@ -1098,11 +1098,11 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
         if time.monotonic() >= deadline:
             models.append(info)
             continue
-        if guaranteed or scenario:
+        if guaranteed:
             models.append(dict(info, reason='unsupported_transform'))
             continue
         try:
-            current = rescue.current_candidates(prepared, get_connection, region, _normalize_bonus_id)
+            current = current_views(prepared, get_connection, region, _normalize_bonus_id)
         except Exception:
             models.append(dict(info, reason='market_validation_error'))
             continue
@@ -1115,7 +1115,7 @@ def _ordinary_result(result, profiles, complete, budget, minimum, maximum, carry
                 return False
             combo = [current[int(i)] for i in ids]
             # A lot can expire or be replaced while HiGHS is running.
-            if len(rescue.current_candidates(combo, get_connection, region, _normalize_bonus_id)) != len(combo):
+            if len(current_views(combo, get_connection, region, _normalize_bonus_id)) != len(combo):
                 return False
             _process_combo(combo, container, sum(o.buyout_price for o in combo), priorities,
                            minimum, checked, budget, max_thresholds=maximum, objective=objective,

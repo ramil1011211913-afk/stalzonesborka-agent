@@ -167,6 +167,52 @@ def test_fetch_all_lots_accepts_complete_pagination(monkeypatch):
     assert api.fetch_all_lots('x', max_records=2) == [{'id': 1}, {'id': 2}]
 
 
+@pytest.mark.parametrize('page', [
+    {}, {'total': 0}, {'lots': []}, {'total': None, 'lots': []},
+    {'total': True, 'lots': []}, {'total': -1, 'lots': []},
+    {'total': 0, 'lots': None}, {'total': 1, 'lots': [None]},
+])
+def test_invalid_auction_page_preserves_existing_lots(tmp_path, monkeypatch, page):
+    from app import collector, database
+    from app.config import Config
+    monkeypatch.setattr(Config, 'DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(Config, 'DB_PATH', str(tmp_path / 'market.db'))
+    database.init_db()
+    lease = StateStore(tmp_path / 'app_state.sqlite3').claim(auction_job(Config.REGION))
+    database.replace_lots_for_item('a', [{'buyoutPrice': 42}], Config.REGION, lease)
+    lease.finish()
+    monkeypatch.setattr(collector.StalzoneAPI, 'get_auction_lots',
+                        lambda *args, **kwargs: page)
+    with pytest.raises(RuntimeError, match='failed for 1 items'):
+        collector.collect_auction_data(item_ids=['a'], include_history=False)
+    with sqlite3.connect(Config.DB_PATH) as conn:
+        assert conn.execute('SELECT buyout_price FROM auction_lots').fetchall() == [(42,)]
+
+
+def test_emission_cache_is_separate_for_each_region(tmp_path, monkeypatch):
+    from app import builder, database
+    from app.api_client import StalzoneAPI
+    from app.config import Config
+    monkeypatch.setattr(Config, 'DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(Config, 'DB_PATH', str(tmp_path / 'market.db'))
+    monkeypatch.setattr(builder, '_emission_cache', {})
+    database.init_db()
+    store = StateStore(tmp_path / 'app_state.sqlite3')
+    for region in ('EU', 'NA'):
+        lease = store.claim(auction_job(region))
+        database.replace_lots_for_item('a', [{'buyoutPrice': 42}], region, lease)
+        lease.finish()
+    calls = []
+    def emission(api):
+        calls.append(api.region)
+        return {'region': api.region}
+    monkeypatch.setattr(StalzoneAPI, 'get_emission', emission)
+    assert builder.check_auction_freshness('eu')['last_emission'] == {'region': 'EU'}
+    assert builder.check_auction_freshness('NA')['last_emission'] == {'region': 'NA'}
+    assert builder.check_auction_freshness('EU')['last_emission'] == {'region': 'EU'}
+    assert calls == ['EU', 'NA']
+
+
 def test_history_merge_deduplicates_and_keeps_window(tmp_path, monkeypatch):
     from app import database
     from app.config import Config
